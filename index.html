@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bikepacking Route Library</title>
+  <link rel="stylesheet" href="styles.css?v=20260705-real-sources-1">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <div>
+        <h1>Bikepacking Route Library</h1>
+        <p id="tripDescription">Browse route ideas, then choose dates, region, and trip style to see what deserves a closer planning check.</p>
+      </div>
+      <div class="trip-picker">
+        <label for="tripSelect">Trip</label>
+        <select id="tripSelect"></select>
+      </div>
+    </header>
+
+    <details class="advanced-groups">
+      <summary>Advanced groups</summary>
+      <section class="group-tabs" id="groupTabs" aria-label="Route groups"></section>
+    </details>
+
+    <section class="library-controls" aria-label="Library filters">
+      <div class="library-stats" id="libraryStats"></div>
+      <div class="filter-row">
+        <label>
+          Search
+          <input id="routeSearch" type="search" placeholder="Route, region, tip, resource">
+        </label>
+        <label>
+          Region
+          <select id="regionFilter">
+            <option value="all">All regions</option>
+          </select>
+        </label>
+        <label>
+          Trip window
+          <span class="date-range">
+            <input id="dateStart" type="date" aria-label="Start date">
+            <input id="dateEnd" type="date" aria-label="End date">
+          </span>
+        </label>
+        <label>
+          Season
+          <select id="seasonFilter">
+            <option value="all">Any season</option>
+            <option value="spring">Spring</option>
+            <option value="summer">Summer</option>
+            <option value="fall">Fall</option>
+            <option value="winter">Winter</option>
+          </select>
+        </label>
+        <label>
+          Trip length
+          <select id="tripLengthFilter">
+            <option value="all">Any length</option>
+            <option value="overnight">Overnight</option>
+            <option value="2-3">2-3 days</option>
+            <option value="4-5">4-5 days</option>
+            <option value="weeklong">Weeklong+</option>
+          </select>
+        </label>
+        <label>
+          Difficulty
+          <select id="difficultyFilter">
+            <option value="all">All difficulty</option>
+            <option value="beginner">Beginner-friendly</option>
+            <option value="moderate">Moderate</option>
+            <option value="hard">Hard</option>
+          </select>
+        </label>
+        <label>
+          Surface
+          <select id="gravelFilter">
+            <option value="all">All gravel levels</option>
+            <option value="low-medium">Low / medium</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+          </select>
+        </label>
+        <label>
+          Readiness
+          <select id="readinessFilter">
+            <option value="all">All readiness</option>
+            <option value="best">Best candidates</option>
+            <option value="near">Near ride-ready</option>
+            <option value="candidate">Needs refresh</option>
+            <option value="blocked">Blocked / rework</option>
+          </select>
+        </label>
+        <label>
+          Status
+          <select id="statusFilter">
+            <option value="all">All statuses</option>
+            <option value="idea">Ideas</option>
+            <option value="planning_grade">Planning-grade</option>
+            <option value="ride_ready">Ride-ready</option>
+          </select>
+        </label>
+      </div>
+      <p class="filter-note">Trip-window filters use broad season notes. Campsites, fire, closures, weather, and water still need final route-specific refresh.</p>
+      <div class="style-filters" id="styleFilters" aria-label="Trip style filters"></div>
+      <div class="active-filter-row">
+        <div class="active-filter-summary" id="activeFilterSummary"></div>
+        <button type="button" id="clearFilters" class="clear-filters">Clear planning filters</button>
+      </div>
+      <div class="readiness-dashboard" id="readinessDashboard"></div>
+    </section>
+
+    <section class="planner-grid">
+      <aside class="route-panel">
+        <div class="panel-heading">
+          <h2>Routes</h2>
+          <span id="routeCount"></span>
+        </div>
+        <div class="route-list" id="routeList"></div>
+      </aside>
+
+      <section class="map-panel">
+        <div class="map-toolbar">
+          <div>
+            <strong id="mapTitle">All Routes</strong>
+            <span id="mapSubtitle"></span>
+            <span id="mapQa"></span>
+          </div>
+          <div class="export-actions">
+            <button type="button" id="downloadGeojson">GeoJSON</button>
+            <button type="button" id="downloadGpx">GPX</button>
+          </div>
+        </div>
+        <div class="map" id="map" aria-label="Route map">
+          <div class="tile-layer" id="tileLayer"></div>
+          <svg id="routeSvg" class="route-svg" role="img" aria-label="Route geometry"></svg>
+          <div class="map-controls" aria-label="Map controls">
+            <button type="button" id="zoomIn" aria-label="Zoom in">+</button>
+            <button type="button" id="zoomOut" aria-label="Zoom out">-</button>
+            <button type="button" id="fitMap" aria-label="Fit selected routes">Fit</button>
+          </div>
+          <div class="map-legend" id="mapLegend"></div>
+          <div class="map-hint" id="mapHint">Terrain tiles load from OpenTopoMap when available; routes and exports are local.</div>
+        </div>
+      </section>
+    </section>
+
+    <section class="detail-grid">
+      <section class="detail-panel">
+        <div class="panel-heading">
+          <h2 id="detailTitle">Routes Overview</h2>
+          <span id="detailMeta"></span>
+        </div>
+        <div class="day-flow" id="dayFlow"></div>
+      </section>
+
+      <section class="detail-panel">
+        <div class="panel-heading">
+          <h2>Variants & Add-ons</h2>
+          <span id="variantMeta"></span>
+        </div>
+        <div class="variants" id="variants"></div>
+      </section>
+    </section>
+
+    <section class="review-grid">
+      <section class="detail-panel">
+        <div class="panel-heading">
+          <h2>Vetting & Evidence</h2>
+          <span id="reviewMeta">quality gates</span>
+        </div>
+        <div id="reviewPanel" class="review-panel"></div>
+      </section>
+
+      <section class="detail-panel">
+        <div class="panel-heading">
+          <h2>Trip Details</h2>
+          <span id="resourceMeta">route readiness</span>
+        </div>
+        <div id="resourcePanel" class="resource-panel"></div>
+      </section>
+    </section>
+
+    <section class="bottom-grid">
+      <section class="detail-panel">
+        <div class="panel-heading">
+          <h2>Elevation Comparison</h2>
+          <span>distance / gain</span>
+        </div>
+        <div id="elevationBars" class="elevation-bars"></div>
+      </section>
+
+      <section class="detail-panel">
+        <div class="panel-heading">
+          <h2>Planning Notes</h2>
+          <span id="editStatus">saved locally</span>
+        </div>
+        <form id="editForm" class="edit-form">
+          <textarea id="editText" rows="5" placeholder="Ask for a route edit, e.g. make Day 2 shorter, add a lower-climbing gravel option, or avoid lakeside camps."></textarea>
+          <div class="edit-actions">
+            <button type="submit">Save Edit Request</button>
+            <button type="button" id="copyPrompt">Copy Prompt</button>
+          </div>
+        </form>
+        <p class="source-note">This is an offline-first edit inbox. It does not embed the consumer ChatGPT app; saved asks can be handled by Codex or an OpenAI API endpoint later.</p>
+      </section>
+    </section>
+
+    <section class="source-notes" id="sourceNotes"></section>
+  </main>
+  <script src="app.js?v=20260705-real-sources-1"></script>
+</body>
+</html>
