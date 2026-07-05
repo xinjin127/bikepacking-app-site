@@ -17,6 +17,7 @@ const state = {
   selectedRouteId: "__all",
   highlightedRouteId: null,
   activeVariants: new Set(),
+  routeDetailPromises: new Map(),
   map: {
     zoom: 8,
     center: [-122.3, 38.2],
@@ -68,6 +69,7 @@ const MAX_LOCAL_STORAGE_CACHE_BYTES = 1_500_000;
 const OVERVIEW_ROUTE_POINTS = 260;
 const OVERVIEW_HIGHLIGHT_POINTS = 1000;
 const DETAIL_ROUTE_POINTS = 6000;
+const DATA_VERSION = "20260705-split-data-1";
 
 const els = {
   tripSelect: document.querySelector("#tripSelect"),
@@ -198,6 +200,7 @@ function setupMapInteractions() {
   els.map.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return;
     if (event.target.closest(".map-controls, .map-legend, .map-hint")) return;
+    if (event.target.closest(".route-line")) return;
     stopPanInertia();
     commitMapPreview();
     state.map.dragging = true;
@@ -250,6 +253,7 @@ function handleWheelZoom(event) {
 
 async function loadTrip(tripId) {
   state.trip = await fetchJson(`/api/trips/${tripId}`);
+  state.routeDetailPromises.clear();
   state.group = "all";
   state.selectedRegion = "all";
   state.statusFilter = "all";
@@ -319,15 +323,19 @@ function clearPlanningFilters() {
 }
 
 async function fetchJson(url) {
-  const withVersion = (path) => `${path}${path.includes("?") ? "&" : "?"}v=20260705-real-sources-1`;
-  const candidates = [url];
+  const withVersion = (path) => `${path}${path.includes("?") ? "&" : "?"}v=${DATA_VERSION}`;
+  const candidates = [];
   if (url === "/api/trips") {
     candidates.push("data/trips/index.json");
     candidates.push("../data/trips/index.json");
+    candidates.push(url);
   } else if (url.startsWith("/api/trips/")) {
     const tripId = encodeURIComponent(url.split("/").pop());
     candidates.push(`data/trips/${tripId}.json`);
     candidates.push(`../data/trips/${tripId}.json`);
+    candidates.push(url);
+  } else {
+    candidates.push(url);
   }
   const errors = [];
   for (const candidate of candidates) {
@@ -388,6 +396,48 @@ function recallJson(url) {
   } catch {
     return null;
   }
+}
+
+function routeDetailCandidates(route) {
+  const detailPath = route.detailPath || `routes/${route.id}.json`;
+  const basePath = state.trip?.detailBasePath || `${state.trip?.id || "route-library"}/`;
+  return [
+    `data/trips/${basePath}${detailPath}`,
+    `../data/trips/${basePath}${detailPath}`,
+  ];
+}
+
+function routeHasFullDetail(route) {
+  return route && route.hasFullDetail !== false && !route.overviewGeometry;
+}
+
+async function hydrateRoute(route) {
+  if (!route || routeHasFullDetail(route)) return route;
+  if (!state.routeDetailPromises.has(route.id)) {
+    state.routeDetailPromises.set(route.id, (async () => {
+      const errors = [];
+      for (const candidate of routeDetailCandidates(route)) {
+        try {
+          const detail = await fetchJsonWithRetry(`${candidate}${candidate.includes("?") ? "&" : "?"}v=${DATA_VERSION}`);
+          const fullRoute = detail.route || detail;
+          Object.assign(route, fullRoute, { hasFullDetail: true, overviewGeometry: false });
+          return route;
+        } catch (error) {
+          errors.push(`${candidate}: ${error.message}`);
+        }
+      }
+      throw new Error(`Could not load route detail for ${route.name || route.id}. Tried ${errors.join(" | ")}`);
+    })());
+  }
+  return state.routeDetailPromises.get(route.id);
+}
+
+async function hydrateRoutes(routes) {
+  const hydrated = [];
+  for (const route of routes) {
+    hydrated.push(await hydrateRoute(route));
+  }
+  return hydrated;
 }
 
 function cacheKey(url) {
@@ -531,44 +581,19 @@ function renderActiveFilterSummary() {
 function renderReadinessDashboard() {
   const routes = filteredRoutes();
   const summary = filteredReadinessSummary(routes);
-  const topRoutes = summary.topRoutes || [];
   const blockers = summary.topBlockerCategories || [];
   const snapshotLabel = planningContextActive()
-    ? dateContextActive() ? "Planning Snapshot - broad season/date hints only" : "Planning Snapshot"
-    : "Library Snapshot";
+    ? dateContextActive() ? "date-filtered" : "filtered"
+    : "library";
+  const topBlocker = blockers[0]
+    ? `${blockers[0].category}: ${blockers[0].count}`
+    : "no blocker data";
   els.readinessDashboard.innerHTML = `
-    <div class="dashboard-card">
-      <strong>${summary.routeCount || 0}</strong>
-      <span>${snapshotLabel} matching routes</span>
-    </div>
-    <div class="dashboard-card">
-      <strong>${summary.rideReadyCount || 0}/${summary.routeCount || 0}</strong>
-      <span>ride-ready routes</span>
-    </div>
-    <div class="dashboard-card">
-      <strong>${summary.needsRefreshCount || 0}</strong>
-      <span>need date or condition refresh</span>
-    </div>
-    <div class="dashboard-card">
-      <strong>${summary.planningGradeCount || 0}</strong>
-      <span>planning-grade routes</span>
-    </div>
-    <div class="dashboard-card">
-      <strong>${summary.ideaCount || 0}</strong>
-      <span>rough ideas</span>
-    </div>
-    <div class="dashboard-card wide">
-      <strong>Best browse matches</strong>
-      <span>${topRoutes.map((route) => `${escapeHtml(route.name)} - ${escapeHtml(route.clearance)}, ${labelDecision(route.decision)}, ${route.blockers} blockers`).join(" | ") || "No routes cleared yet"}</span>
-    </div>
-    <div class="dashboard-card wide">
-      <strong>Top regions</strong>
-      <span>${summary.topRegions.map((item) => `${escapeHtml(item.region)}: ${item.count}`).join(" | ") || "No regions matched"}</span>
-    </div>
-    <div class="dashboard-card wide">
-      <strong>Common missing info / blockers</strong>
-      <span>${blockers.map((item) => `${escapeHtml(item.category)}: ${item.count}`).join(" | ") || "No blockers recorded"}</span>
-    </div>`;
+    <span><strong>${summary.routeCount || 0}</strong> ${snapshotLabel} matches</span>
+    <span><strong>${summary.rideReadyCount || 0}</strong> ride-ready</span>
+    <span><strong>${summary.planningGradeCount || 0}</strong> planning-grade</span>
+    <span><strong>${summary.needsRefreshCount || 0}</strong> need refresh</span>
+    <span>top gate: <strong>${escapeHtml(topBlocker)}</strong></span>`;
 }
 
 function filteredReadinessSummary(routes) {
@@ -1000,13 +1025,44 @@ function renderRouteList() {
   els.routeList.replaceChildren(all, ...rows);
 }
 
-function selectRoute(route) {
+async function selectRoute(route) {
   state.selectedRouteId = route.id;
   state.selectedCatalogueId = null;
   state.highlightedRouteId = null;
   state.activeVariants.clear();
   fitToRoutes([route]);
   drawAll();
+  try {
+    await hydrateRoute(route);
+    if (state.selectedRouteId === route.id) {
+      fitToRoutes([route]);
+      drawAll();
+    }
+  } catch (error) {
+    showLoadError(error);
+  }
+}
+
+async function focusRouteFromMap(route, event = null) {
+  event?.preventDefault();
+  event?.stopPropagation();
+  stopPanInertia();
+  commitMapPreview();
+  state.selectedRouteId = route.id;
+  state.selectedCatalogueId = null;
+  state.highlightedRouteId = null;
+  state.activeVariants.clear();
+  fitToRoutes([route]);
+  drawAll();
+  try {
+    await hydrateRoute(route);
+    if (state.selectedRouteId === route.id) {
+      fitToRoutes([route]);
+      drawAll();
+    }
+  } catch (error) {
+    showLoadError(error);
+  }
 }
 
 function drawAll() {
@@ -1050,7 +1106,14 @@ function drawMap() {
     : planningContextActive() ? "Planning context active: final route-specific checks are still required before departure." : "Date-agnostic browse mode: select a route to inspect planning status and evidence.";
   renderMapLegend(routes);
 
-  for (const item of routes) {
+  const drawRoutes = state.highlightedRouteId
+    ? [
+      ...routes.filter((item) => item.id !== state.highlightedRouteId),
+      ...routes.filter((item) => item.id === state.highlightedRouteId),
+    ]
+    : routes;
+
+  for (const item of drawRoutes) {
     const highlighted = state.highlightedRouteId && state.highlightedRouteId === item.id;
     const dim = state.highlightedRouteId && !highlighted;
     const overview = !route;
@@ -1070,13 +1133,7 @@ function drawMap() {
         maxPoints,
         className: `route-line ${overview ? "overview" : ""} ${dim ? "dim" : ""} ${highlighted ? "highlight" : ""}`,
         title: item.name,
-        onClick: () => {
-          if (state.selectedRouteId === "__all") {
-            state.selectedRouteId = item.id;
-            fitToRoutes([item]);
-            drawAll();
-          }
-        },
+        onClick: (event) => focusRouteFromMap(item, event),
         onEnter: () => {
           if (state.map.dragging) return;
           if (state.selectedRouteId === "__all") {
@@ -1215,8 +1272,8 @@ function renderDetails() {
     els.dayFlow.replaceChildren(intro, ...cards);
     return;
   }
-  els.detailTitle.textContent = "Route Overview";
-  els.detailMeta.textContent = `${route.days.length} days | ${labelStatus(route.status)}`;
+  els.detailTitle.textContent = route.name;
+  els.detailMeta.textContent = `route overview | ${route.days.length} days | ${labelStatus(route.status)}`;
   const overview = document.createElement("div");
   overview.className = "overview-card route-overview-card";
   overview.innerHTML = `
@@ -1792,23 +1849,31 @@ function routeToGeojson(route) {
   return { type: "FeatureCollection", features };
 }
 
-function downloadGeojson() {
-  const routes = currentExportRoutes();
-  const collection = { type: "FeatureCollection", features: routes.flatMap((route) => routeToGeojson(route).features) };
-  downloadText(`${exportBaseName()}.geojson`, JSON.stringify(collection, null, 2), "application/geo+json");
+async function downloadGeojson() {
+  try {
+    const routes = await hydrateRoutes(currentExportRoutes());
+    const collection = { type: "FeatureCollection", features: routes.flatMap((route) => routeToGeojson(route).features) };
+    downloadText(`${exportBaseName()}.geojson`, JSON.stringify(collection, null, 2), "application/geo+json");
+  } catch (error) {
+    showLoadError(error);
+  }
 }
 
-function downloadGpx() {
-  const routes = currentExportRoutes();
-  const tracks = routes.flatMap((route) => route.days.map((day) => {
-    const pts = day.coords.map((coord) => {
-      const ele = coord.length > 2 ? `<ele>${coord[2].toFixed(1)}</ele>` : "";
-      return `      <trkpt lat="${coord[1].toFixed(6)}" lon="${coord[0].toFixed(6)}">${ele}</trkpt>`;
-    }).join("\n");
-    return `  <trk><name>${xmlEscape(route.name)} - Day ${day.day}</name><desc>${xmlEscape(day.name)}</desc><trkseg>\n${pts}\n    </trkseg></trk>`;
-  })).join("\n");
-  const gpx = `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="bikepacking_planner" xmlns="http://www.topografix.com/GPX/1/1">\n${tracks}\n</gpx>\n`;
-  downloadText(`${exportBaseName()}.gpx`, gpx, "application/gpx+xml");
+async function downloadGpx() {
+  try {
+    const routes = await hydrateRoutes(currentExportRoutes());
+    const tracks = routes.flatMap((route) => route.days.map((day) => {
+      const pts = day.coords.map((coord) => {
+        const ele = coord.length > 2 ? `<ele>${coord[2].toFixed(1)}</ele>` : "";
+        return `      <trkpt lat="${coord[1].toFixed(6)}" lon="${coord[0].toFixed(6)}">${ele}</trkpt>`;
+      }).join("\n");
+      return `  <trk><name>${xmlEscape(route.name)} - Day ${day.day}</name><desc>${xmlEscape(day.name)}</desc><trkseg>\n${pts}\n    </trkseg></trk>`;
+    })).join("\n");
+    const gpx = `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="bikepacking_planner" xmlns="http://www.topografix.com/GPX/1/1">\n${tracks}\n</gpx>\n`;
+    downloadText(`${exportBaseName()}.gpx`, gpx, "application/gpx+xml");
+  } catch (error) {
+    showLoadError(error);
+  }
 }
 
 function exportBaseName() {
