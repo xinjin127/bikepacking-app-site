@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Bikepacking Route Library</title>
-  <link rel="stylesheet" href="styles.css?v=20260705-map-select-same-detail-1">
+  <link rel="stylesheet" href="styles.css?v=20260705-simplified-inputs-1">
 </head>
 <body>
   <main class="app-shell">
@@ -25,14 +25,6 @@
     </details>
 
     <section class="library-controls" aria-label="Library filters">
-      <div class="readiness-dashboard decision-dashboard" id="readinessDashboard"></div>
-      <div class="readiness-definitions" aria-label="Readiness definitions">
-        <span><strong>Ride-ready</strong> Current geometry, legality, overnight, water, closure/fire/weather, and export checks.</span>
-        <span><strong>Close</strong> Useful route with final checks remaining.</span>
-        <span><strong>Needs refresh</strong> Current campsite, closure, water, weather, or fire data is stale.</span>
-        <span><strong>Blocked</strong> Do not rely on it yet.</span>
-      </div>
-      <div class="filter-section-label">Plan a trip</div>
       <div class="filter-row planning-filters">
         <label>
           Search
@@ -90,7 +82,6 @@
           </select>
         </label>
       </div>
-      <p class="filter-note"><strong>Date-specific readiness requires fresh checks.</strong> Campsites, fire, closures, weather, and water still need final route-specific refresh.</p>
       <div class="style-filters" id="styleFilters" aria-label="Trip style filters"></div>
       <details class="vetting-filters">
         <summary>Vetting status and route development filters</summary>
@@ -117,10 +108,11 @@
         </div>
       </details>
       <div class="active-filter-row">
-        <div class="active-filter-summary" id="activeFilterSummary"></div>
         <button type="button" id="clearFilters" class="clear-filters">Clear planning filters</button>
       </div>
-      <div class="library-stats" id="libraryStats"></div>
+      <div class="active-filter-summary" id="activeFilterSummary" hidden></div>
+      <div class="readiness-dashboard decision-dashboard" id="readinessDashboard" hidden></div>
+      <div class="library-stats" id="libraryStats" hidden></div>
     </section>
 
     <section class="planner-grid">
@@ -210,33 +202,17 @@
       </section>
     </section>
 
-    <section class="bottom-grid">
-      <section class="detail-panel">
-        <div class="panel-heading">
-          <h2>Elevation Comparison</h2>
-          <span>distance / gain</span>
-        </div>
-        <div id="elevationBars" class="elevation-bars"></div>
-      </section>
-
-      <section class="detail-panel">
-        <div class="panel-heading">
-          <h2>Planning Notes</h2>
-          <span id="editStatus">saved locally</span>
-        </div>
-        <form id="editForm" class="edit-form">
-          <textarea id="editText" rows="5" placeholder="Ask for a route edit, e.g. make Day 2 shorter, add a lower-climbing gravel option, or avoid lakeside camps."></textarea>
-          <div class="edit-actions">
-            <button type="submit">Save Edit Request</button>
-            <button type="button" id="copyPrompt">Copy Prompt</button>
-          </div>
-        </form>
-        <p class="source-note">This is an offline-first edit inbox. It does not embed the consumer ChatGPT app; saved asks can be handled by Codex or an OpenAI API endpoint later.</p>
-      </section>
-    </section>
-
-    <section class="source-notes" id="sourceNotes"></section>
+    <div hidden>
+      <div id="elevationBars"></div>
+      <span id="editStatus"></span>
+      <form id="editForm">
+        <textarea id="editText"></textarea>
+        <button type="submit">Save Edit Request</button>
+        <button type="button" id="copyPrompt">Copy Prompt</button>
+      </form>
+      <section id="sourceNotes"></section>
+    </div>
   </main>
-  <script src="app.js?v=20260705-map-select-same-detail-1"></script>
+  <script src="app.js?v=20260705-simplified-inputs-1"></script>
 </body>
 </html>
