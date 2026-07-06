@@ -385,8 +385,12 @@ textarea {
 }
 
 .group-tabs button,
+.export-actions a,
 .export-actions button,
 .edit-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel);
@@ -395,6 +399,7 @@ textarea {
   padding: 0 12px;
   cursor: pointer;
   font-weight: 760;
+  text-decoration: none;
 }
 
 .group-tabs button.active,
@@ -1046,6 +1051,7 @@ textarea {
 }
 
 .map-controls button:hover,
+.export-actions a:hover,
 .export-actions button:hover,
 .group-tabs button:hover,
 .style-filters button:hover,
@@ -1439,6 +1445,13 @@ button:disabled {
   font-weight: 600;
 }
 
+.build-footer {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 760;
+  padding: 12px 6px 0;
+}
+
 .review-panel,
 .resource-panel {
   display: grid;
@@ -1733,6 +1746,7 @@ dd {
     width: 100%;
   }
 
+  .export-actions a,
   .export-actions button {
     flex: 1;
   }

@@ -30,6 +30,9 @@ const state = {
   basemap: "fast",
   activeVariants: new Set(),
   routeDetailPromises: new Map(),
+  exportPackageUrl: "",
+  exportPackageRouteId: "",
+  exportPackagePreparingRouteId: "",
   map: {
     zoom: 8,
     center: [-122.3, 38.2],
@@ -81,9 +84,16 @@ const MAX_LOCAL_STORAGE_CACHE_BYTES = 1_500_000;
 const OVERVIEW_ROUTE_POINTS = 260;
 const OVERVIEW_HIGHLIGHT_POINTS = 1000;
 const DETAIL_ROUTE_POINTS = 6000;
-const DATA_VERSION = "20260705-simplified-inputs-2";
+const DATA_VERSION = "20260705-export-package-1";
 const CAMPSITE_DATA_PATH = "california_route_stay_inventory.geojson";
 const BLM_CA_SMA_QUERY_URL = "https://gis.blm.gov/caarcgis/rest/services/lands/BLM_CA_LandStatus_SurfaceManagementAgency/FeatureServer/0/query";
+const CRC32_TABLE = Array.from({ length: 256 }, (_, index) => {
+  let crc = index;
+  for (let bit = 0; bit < 8; bit += 1) {
+    crc = crc & 1 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1;
+  }
+  return crc >>> 0;
+});
 const DISPERSED_AREA_STYLES = {
   2: { color: "#6f5aa8", label: "BLM candidate land", manager: "BLM" },
   915: { color: "#2f7b58", label: "USFS candidate land", manager: "USFS" },
@@ -153,6 +163,7 @@ const els = {
   variants: document.querySelector("#variants"),
   variantMeta: document.querySelector("#variantMeta"),
   elevationBars: document.querySelector("#elevationBars"),
+  exportRoutePackage: document.querySelector("#exportRoutePackage"),
   downloadGeojson: document.querySelector("#downloadGeojson"),
   downloadGpx: document.querySelector("#downloadGpx"),
   editForm: document.querySelector("#editForm"),
@@ -220,8 +231,15 @@ async function init() {
   els.clearFilters.addEventListener("click", () => {
     clearPlanningFilters();
   });
-  els.downloadGeojson.addEventListener("click", () => downloadGeojson());
-  els.downloadGpx.addEventListener("click", () => downloadGpx());
+  els.downloadGeojson?.addEventListener("click", () => downloadGeojson());
+  els.downloadGpx?.addEventListener("click", () => downloadGpx());
+  els.exportRoutePackage?.addEventListener("click", (event) => {
+    if (els.exportRoutePackage.getAttribute("aria-disabled") === "true" || !els.exportRoutePackage.getAttribute("href")) {
+      event.preventDefault();
+      const route = selectedRoute();
+      if (route) prepareRouteExport(route);
+    }
+  });
   els.editForm.addEventListener("submit", saveEditRequest);
   els.copyPrompt.addEventListener("click", copyEditPrompt);
   setupMapInteractions();
@@ -238,7 +256,7 @@ function setupMapInteractions() {
     stopPanInertia();
     zoomBy(-0.5);
   });
-  els.fitMap.addEventListener("click", () => {
+  els.fitMap?.addEventListener("click", () => {
     stopPanInertia();
     fitToRoutes(selectedRoute() ? [selectedRoute()] : filteredRoutes());
     drawMap();
@@ -257,6 +275,12 @@ function setupMapInteractions() {
     state.dispersedAreasNotice = "";
     drawMap();
   });
+  els.routeSvg.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    const routeId = event.target.closest?.(".route-line")?.dataset?.route;
+    if (!routeId) return;
+    focusRouteIdFromMap(routeId, event);
+  }, { capture: true });
   els.routeSvg.addEventListener("click", (event) => {
     const routeId = routeIdFromMapEvent(event);
     if (!routeId) return;
@@ -1124,9 +1148,8 @@ function renderRouteList() {
   });
 
   const rows = routes.map((route) => {
-    const row = document.createElement("div");
-    row.tabIndex = 0;
-    row.setAttribute("role", "button");
+    const row = document.createElement("button");
+    row.type = "button";
     row.className = `route-row ${state.selectedRouteId === route.id ? "active" : ""}`;
     row.innerHTML = `
       <span class="route-swatch" style="background:${route.color || "#2f7b58"}"></span>
@@ -1143,7 +1166,6 @@ function renderRouteList() {
           <span class="pill">${surfaceLabel(route)}</span>
           <span class="pill ${gateCountClass(route)}">${gateSummaryLabel(route)}</span>
         </span>
-        ${sourceLinkHtml(route, { compact: true })}
       </span>`;
     row.addEventListener("mouseenter", () => {
       if (state.selectedRouteId === "__all") {
@@ -1157,10 +1179,7 @@ function renderRouteList() {
         drawMap();
       }
     });
-    row.addEventListener("click", (event) => {
-      if (event.target.closest("a")) return;
-      selectRoute(route);
-    });
+    row.addEventListener("click", () => selectRoute(route));
     row.addEventListener("keydown", (event) => {
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
@@ -2335,8 +2354,20 @@ function currentExportRoutes() {
 
 function updateExportButtons() {
   const disabled = currentExportRoutes().length === 0;
-  els.downloadGeojson.disabled = disabled;
-  els.downloadGpx.disabled = disabled;
+  if (els.downloadGeojson) els.downloadGeojson.disabled = disabled;
+  if (els.downloadGpx) els.downloadGpx.disabled = disabled;
+  const route = selectedRoute();
+  if (els.exportRoutePackage) {
+    els.exportRoutePackage.hidden = !route;
+    if (!route) {
+      clearRouteExport();
+      els.exportRoutePackage.textContent = "Preparing export...";
+      els.exportRoutePackage.setAttribute("aria-disabled", "true");
+      els.exportRoutePackage.removeAttribute("href");
+    } else if (state.exportPackageRouteId !== route.id && state.exportPackagePreparingRouteId !== route.id) {
+      prepareRouteExport(route);
+    }
+  }
 }
 
 function routeToGeojson(route) {
@@ -2377,18 +2408,242 @@ async function downloadGeojson() {
 async function downloadGpx() {
   try {
     const routes = await hydrateRoutes(currentExportRoutes());
-    const tracks = routes.flatMap((route) => route.days.map((day) => {
-      const pts = day.coords.map((coord) => {
-        const ele = coord.length > 2 ? `<ele>${coord[2].toFixed(1)}</ele>` : "";
-        return `      <trkpt lat="${coord[1].toFixed(6)}" lon="${coord[0].toFixed(6)}">${ele}</trkpt>`;
-      }).join("\n");
-      return `  <trk><name>${xmlEscape(route.name)} - Day ${day.day}</name><desc>${xmlEscape(day.name)}</desc><trkseg>\n${pts}\n    </trkseg></trk>`;
-    })).join("\n");
-    const gpx = `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="bikepacking_planner" xmlns="http://www.topografix.com/GPX/1/1">\n${tracks}\n</gpx>\n`;
-    downloadText(`${exportBaseName()}.gpx`, gpx, "application/gpx+xml");
+    downloadText(`${exportBaseName()}.gpx`, routesToGpx(routes), "application/gpx+xml");
   } catch (error) {
     showLoadError(error);
   }
+}
+
+async function exportSelectedRoutePackage() {
+  const route = selectedRoute();
+  if (!route) return;
+  try {
+    const blob = await routeExportPackage(route);
+    downloadBlob(`${route.id}-export.zip`, blob, "application/zip");
+  } catch (error) {
+    showLoadError(error);
+  }
+}
+
+async function prepareRouteExport(route) {
+  if (!els.exportRoutePackage || !route) return;
+  clearRouteExport();
+  state.exportPackagePreparingRouteId = route.id;
+  els.exportRoutePackage.textContent = "Preparing export...";
+  els.exportRoutePackage.setAttribute("aria-disabled", "true");
+  els.exportRoutePackage.removeAttribute("href");
+  try {
+    const blob = await routeExportPackage(route);
+    if (selectedRoute()?.id !== route.id) return;
+    const url = URL.createObjectURL(blob);
+    state.exportPackageUrl = url;
+    state.exportPackageRouteId = route.id;
+    els.exportRoutePackage.href = url;
+    els.exportRoutePackage.download = `${route.id}-export.zip`;
+    els.exportRoutePackage.textContent = "Export GPX + PDF";
+    els.exportRoutePackage.setAttribute("aria-disabled", "false");
+  } catch (error) {
+    if (selectedRoute()?.id === route.id) showLoadError(error);
+    els.exportRoutePackage.textContent = "Export unavailable";
+  } finally {
+    if (state.exportPackagePreparingRouteId === route.id) state.exportPackagePreparingRouteId = "";
+  }
+}
+
+async function routeExportPackage(route) {
+  const [hydrated] = await hydrateRoutes([route]);
+  const gpx = new TextEncoder().encode(routesToGpx([hydrated]));
+  const pdf = new Uint8Array(await routeSummaryPdf(hydrated).arrayBuffer());
+  return buildZip([
+    { name: `${hydrated.id}.gpx`, bytes: gpx },
+    { name: `${hydrated.id}-summary.pdf`, bytes: pdf },
+  ]);
+}
+
+function clearRouteExport() {
+  if (state.exportPackageUrl) URL.revokeObjectURL(state.exportPackageUrl);
+  state.exportPackageUrl = "";
+  state.exportPackageRouteId = "";
+}
+
+function routesToGpx(routes) {
+  const tracks = routes.flatMap((route) => route.days.map((day) => {
+    const pts = day.coords.map((coord) => {
+      const ele = coord.length > 2 ? `<ele>${coord[2].toFixed(1)}</ele>` : "";
+      return `      <trkpt lat="${coord[1].toFixed(6)}" lon="${coord[0].toFixed(6)}">${ele}</trkpt>`;
+    }).join("\n");
+    return `  <trk><name>${xmlEscape(route.name)} - Day ${day.day}</name><desc>${xmlEscape(day.name)}</desc><trkseg>\n${pts}\n    </trkseg></trk>`;
+  })).join("\n");
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="bikepacking_planner" xmlns="http://www.topografix.com/GPX/1/1">\n${tracks}\n</gpx>\n`;
+}
+
+function routeSummaryPdf(route) {
+  const lines = routeSummaryLines(route).flatMap((line) => wrapPdfLine(line, 92));
+  const content = [
+    "BT",
+    "/F1 18 Tf",
+    "54 760 Td",
+    `(${pdfEscape(route.name || "Route summary")}) Tj`,
+    "/F1 10 Tf",
+    "0 -24 Td",
+    ...lines.slice(0, 42).map((line) => [`(${pdfEscape(line)}) Tj`, "0 -14 Td"]).flat(),
+    "ET",
+  ].join("\n");
+  return buildPdf(content);
+}
+
+function routeSummaryLines(route) {
+  const gates = biggestGates(route, 6).map((gate) => `- ${gate.label}${gate.detail ? `: ${gate.detail}` : ""}`);
+  const source = primarySource(route);
+  return [
+    `Region: ${route.region || labelGroup(route.group)}`,
+    `Distance: ${route.distanceMi || 0} mi | Gain: ${(route.gainFt || 0).toLocaleString()} ft | Days: ${(route.days || []).length}`,
+    `Shape: ${route.shape || "route"} | Surface: ${surfaceLabel(route)} | Difficulty: ${route.difficulty || "TBD"}`,
+    `Readiness: ${rideReadyStatusLabel(route)} | Stage: ${routeMaturityLabel(route)}`,
+    `Best season: ${route.bestSeason || "TBD"}`,
+    "",
+    "Remaining work before ride-ready:",
+    ...(gates.length ? gates : ["- No remaining work listed"]),
+    "",
+    "Known logistics:",
+    `Camping/lodging: ${summaryText(route.resources?.camping || route.overnight?.summary, "TBD")}`,
+    `Water/resupply: ${summaryText(route.resources?.water || route.resupply?.summary, "TBD")}`,
+    `Hazards: ${summaryText(route.hazards || route.safety?.summary, "Refresh conditions before riding.")}`,
+    "",
+    `Primary source: ${source?.label || source?.title || "TBD"} ${source?.url || ""}`,
+    "Generated by Bikepacking Route Library. Refresh closures, fire, weather, water, and permits before departure.",
+  ];
+}
+
+function summaryText(value, fallback = "TBD") {
+  if (Array.isArray(value)) return value.filter(Boolean).map((item) => summaryText(item, "")).filter(Boolean).join("; ") || fallback;
+  if (value && typeof value === "object") return value.summary || value.notes || value.label || fallback;
+  return value || fallback;
+}
+
+function wrapPdfLine(line, width) {
+  if (!line) return [""];
+  const words = String(line).replace(/\s+/g, " ").split(" ");
+  const lines = [];
+  let current = "";
+  for (const word of words) {
+    const next = current ? `${current} ${word}` : word;
+    if (next.length > width && current) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = next;
+    }
+  }
+  if (current) lines.push(current);
+  return lines;
+}
+
+function buildPdf(content) {
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+  ];
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  objects.forEach((object, index) => {
+    offsets.push(pdf.length);
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  });
+  const xref = pdf.length;
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  offsets.slice(1).forEach((offset) => {
+    pdf += `${String(offset).padStart(10, "0")} 00000 n \n`;
+  });
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return new Blob([pdf], { type: "application/pdf" });
+}
+
+function pdfEscape(value) {
+  return String(value || "").replace(/[^\x20-\x7E]/g, "").replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
+}
+
+function buildZip(files) {
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+  files.forEach((file) => {
+    const nameBytes = new TextEncoder().encode(file.name);
+    const bytes = file.bytes instanceof Uint8Array ? file.bytes : new Uint8Array(file.bytes);
+    const crc = crc32(bytes);
+    const localHeader = zipLocalHeader(nameBytes, bytes.length, crc);
+    localParts.push(localHeader, bytes);
+    centralParts.push(zipCentralHeader(nameBytes, bytes.length, crc, offset));
+    offset += localHeader.length + bytes.length;
+  });
+  const central = concatUint8(centralParts);
+  const end = zipEndRecord(files.length, central.length, offset);
+  return new Blob([...localParts, central, end], { type: "application/zip" });
+}
+
+function zipLocalHeader(nameBytes, size, crc) {
+  const header = new Uint8Array(30 + nameBytes.length);
+  const view = new DataView(header.buffer);
+  view.setUint32(0, 0x04034b50, true);
+  view.setUint16(4, 20, true);
+  view.setUint16(6, 0x0800, true);
+  view.setUint16(8, 0, true);
+  view.setUint32(14, crc, true);
+  view.setUint32(18, size, true);
+  view.setUint32(22, size, true);
+  view.setUint16(26, nameBytes.length, true);
+  header.set(nameBytes, 30);
+  return header;
+}
+
+function zipCentralHeader(nameBytes, size, crc, offset) {
+  const header = new Uint8Array(46 + nameBytes.length);
+  const view = new DataView(header.buffer);
+  view.setUint32(0, 0x02014b50, true);
+  view.setUint16(4, 20, true);
+  view.setUint16(6, 20, true);
+  view.setUint16(8, 0x0800, true);
+  view.setUint16(10, 0, true);
+  view.setUint32(16, crc, true);
+  view.setUint32(20, size, true);
+  view.setUint32(24, size, true);
+  view.setUint16(28, nameBytes.length, true);
+  view.setUint32(42, offset, true);
+  header.set(nameBytes, 46);
+  return header;
+}
+
+function zipEndRecord(entries, centralSize, centralOffset) {
+  const header = new Uint8Array(22);
+  const view = new DataView(header.buffer);
+  view.setUint32(0, 0x06054b50, true);
+  view.setUint16(8, entries, true);
+  view.setUint16(10, entries, true);
+  view.setUint32(12, centralSize, true);
+  view.setUint32(16, centralOffset, true);
+  return header;
+}
+
+function concatUint8(parts) {
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  parts.forEach((part) => {
+    out.set(part, offset);
+    offset += part.length;
+  });
+  return out;
+}
+
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc = CRC32_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
 }
 
 function exportBaseName() {
@@ -2397,13 +2652,20 @@ function exportBaseName() {
 }
 
 function downloadText(filename, text, type) {
-  const blob = new Blob([text], { type });
-  const url = URL.createObjectURL(blob);
+  downloadBlob(filename, new Blob([text], { type }), type);
+}
+
+function downloadBlob(filename, blob, type = "application/octet-stream") {
+  const typedBlob = blob.type ? blob : new Blob([blob], { type });
+  const url = URL.createObjectURL(typedBlob);
   const link = document.createElement("a");
   link.href = url;
   link.download = filename;
+  link.style.display = "none";
+  document.body.appendChild(link);
   link.click();
-  URL.revokeObjectURL(url);
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 async function saveEditRequest(event) {

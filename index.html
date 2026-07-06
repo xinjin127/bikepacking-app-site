@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Bikepacking Route Library</title>
-  <link rel="stylesheet" href="styles.css?v=20260705-simplified-inputs-2">
+  <link rel="stylesheet" href="styles.css?v=20260705-export-package-1">
 </head>
 <body>
   <main class="app-shell">
@@ -132,8 +132,7 @@
             <span id="mapQa"></span>
           </div>
           <div class="export-actions">
-            <button type="button" id="downloadGeojson">GeoJSON</button>
-            <button type="button" id="downloadGpx">GPX</button>
+            <a id="exportRoutePackage" href="" download hidden aria-disabled="true">Preparing export...</a>
           </div>
         </div>
         <div class="map" id="map" aria-label="Route map">
@@ -141,11 +140,6 @@
           <svg id="dispersedSvg" class="dispersed-svg" role="img" aria-label="Candidate dispersed camping public land"></svg>
           <svg id="routeSvg" class="route-svg" role="img" aria-label="Route geometry"></svg>
           <svg id="campsiteSvg" class="campsite-svg" role="img" aria-label="Campsite locations"></svg>
-          <div class="map-controls" aria-label="Map controls">
-            <button type="button" id="zoomIn" aria-label="Zoom in">+</button>
-            <button type="button" id="zoomOut" aria-label="Zoom out">-</button>
-            <button type="button" id="fitMap" aria-label="Fit selected routes">Fit</button>
-          </div>
           <div class="map-layer-controls" aria-label="Map layers">
             <label class="basemap-control">
               <span>Map</span>
@@ -212,7 +206,8 @@
       </form>
       <section id="sourceNotes"></section>
     </div>
+    <footer class="build-footer">Build: 2026-07-05 export-package-1</footer>
   </main>
-  <script src="app.js?v=20260705-simplified-inputs-2"></script>
+  <script src="app.js?v=20260705-export-package-1"></script>
 </body>
 </html>
