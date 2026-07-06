@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Bikepacking Route Library</title>
-  <link rel="stylesheet" href="styles.css?v=20260705-clickable-overview-cards-1">
+  <link rel="stylesheet" href="styles.css?v=20260705-linked-altitude-1">
 </head>
 <body>
   <main class="app-shell">
@@ -164,6 +164,13 @@
           <div class="campsite-popup" id="campsitePopup" hidden></div>
           <div class="map-hint" id="mapHint">Flat / No Topo loads first; switch to Topo for terrain context. Routes, campsites, and exports are local.</div>
         </div>
+        <section class="detail-panel elevation-panel">
+          <div class="panel-heading">
+            <h2>Altitude Trace</h2>
+            <span id="elevationMeta">select route</span>
+          </div>
+          <div id="elevationBars" class="elevation-bars"></div>
+        </section>
       </section>
     </section>
 
@@ -204,7 +211,6 @@
     </section>
 
     <div hidden>
-      <div id="elevationBars"></div>
       <span id="editStatus"></span>
       <form id="editForm">
         <textarea id="editText"></textarea>
@@ -213,8 +219,8 @@
       </form>
       <section id="sourceNotes"></section>
     </div>
-    <footer class="build-footer">Build: 2026-07-05 clickable-overview-cards-1</footer>
+    <footer class="build-footer">Build: 2026-07-05 linked-altitude-1</footer>
   </main>
-  <script src="app.js?v=20260705-clickable-overview-cards-1"></script>
+  <script src="app.js?v=20260705-linked-altitude-1"></script>
 </body>
 </html>

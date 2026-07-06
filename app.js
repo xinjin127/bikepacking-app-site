@@ -30,6 +30,7 @@ const state = {
   basemap: "fast",
   activeVariants: new Set(),
   routeDetailPromises: new Map(),
+  elevationCursor: null,
   exportPackageUrl: "",
   exportPackageRouteId: "",
   exportPackagePreparingRouteId: "",
@@ -84,7 +85,7 @@ const MAX_LOCAL_STORAGE_CACHE_BYTES = 1_500_000;
 const OVERVIEW_ROUTE_POINTS = 260;
 const OVERVIEW_HIGHLIGHT_POINTS = 1000;
 const DETAIL_ROUTE_POINTS = 6000;
-const DATA_VERSION = "20260705-clickable-overview-cards-1";
+const DATA_VERSION = "20260705-linked-altitude-1";
 const CAMPSITE_DATA_PATH = "california_route_stay_inventory.geojson";
 const BLM_CA_SMA_QUERY_URL = "https://gis.blm.gov/caarcgis/rest/services/lands/BLM_CA_LandStatus_SurfaceManagementAgency/FeatureServer/0/query";
 const CRC32_TABLE = Array.from({ length: 256 }, (_, index) => {
@@ -162,6 +163,7 @@ const els = {
   resourcePanel: document.querySelector("#resourcePanel"),
   variants: document.querySelector("#variants"),
   variantMeta: document.querySelector("#variantMeta"),
+  elevationMeta: document.querySelector("#elevationMeta"),
   elevationBars: document.querySelector("#elevationBars"),
   exportRoutePackage: document.querySelector("#exportRoutePackage"),
   downloadGeojson: document.querySelector("#downloadGeojson"),
@@ -1195,6 +1197,7 @@ async function selectRoute(route) {
   state.selectedRouteId = route.id;
   state.selectedCatalogueId = null;
   state.highlightedRouteId = null;
+  state.elevationCursor = null;
   state.activeVariants.clear();
   fitToRoutes([route]);
   drawAll();
@@ -1326,6 +1329,7 @@ function drawMap() {
         className: `route-line shadow ${overview ? "overview" : ""} ${dim ? "dim" : ""}`,
         title: item.name,
         onClick: (event) => focusRouteFromMap(item, event),
+        onMove: route ? (event) => setElevationCursorFromMap(event, item, projection) : null,
         onEnter: () => {
           if (state.map.dragging) return;
           if (state.selectedRouteId === "__all") {
@@ -1347,6 +1351,7 @@ function drawMap() {
         className: `route-line ${overview ? "overview" : ""} ${dim ? "dim" : ""} ${highlighted ? "highlight" : ""}`,
         title: item.name,
         onClick: (event) => focusRouteFromMap(item, event),
+        onMove: route ? (event) => setElevationCursorFromMap(event, item, projection) : null,
         onEnter: () => {
           if (state.map.dragging) return;
           if (state.selectedRouteId === "__all") {
@@ -1373,6 +1378,7 @@ function drawMap() {
     }
     appendWaypoints(route.waypoints || [], routeFragment, projection);
   }
+  if (route) appendElevationMapMarker(routeFragment, projection);
   els.routeSvg.replaceChildren(routeFragment);
   renderCampsites(routes, projection);
   renderMapLegend(routes);
@@ -1541,6 +1547,7 @@ function appendPath(coords, color, options = {}, target = els.routeSvg, projecti
   if (options.onClick) path.addEventListener("click", options.onClick);
   if (options.onEnter) path.addEventListener("mouseenter", options.onEnter);
   if (options.onLeave) path.addEventListener("mouseleave", options.onLeave);
+  if (options.onMove) path.addEventListener("mousemove", options.onMove);
   target.appendChild(path);
 }
 
@@ -2042,22 +2049,238 @@ function renderVariants() {
 
 function renderElevation() {
   const route = selectedRoute();
-  const routes = route ? [route] : filteredRoutes();
-  if (!routes.length) {
-    els.elevationBars.replaceChildren(emptyNote("No elevation comparison for the current filters."));
+  if (!route) {
+    state.elevationCursor = null;
+    if (els.elevationMeta) els.elevationMeta.textContent = "select route";
+    els.elevationBars.replaceChildren(emptyNote("Select a route to view its altitude trace."));
     return;
   }
-  let maxGain = 1;
-  for (const item of routes) {
-    maxGain = Math.max(maxGain, item.gainFt || 0);
+  const profile = routeElevationProfile(route);
+  if (!profile.points.length) {
+    state.elevationCursor = null;
+    if (els.elevationMeta) els.elevationMeta.textContent = `${(route.gainFt || 0).toLocaleString()} ft listed gain`;
+    els.elevationBars.replaceChildren(emptyNote("This route has gain metadata, but no usable per-point elevation samples in the GPX."));
+    return;
   }
-  els.elevationBars.replaceChildren(...routes.slice(0, 12).map((item) => {
-    const row = document.createElement("div");
-    row.className = "bar-row";
-    const pct = Math.max(4, Math.round((item.gainFt || 0) / maxGain * 100));
-    row.innerHTML = `<strong>${escapeHtml(item.name)}</strong><span class="bar-track"><span class="bar-fill" style="width:${pct}%;background:${item.color || "#2f7b58"}"></span></span><span class="day-meta">${(item.gainFt || 0).toLocaleString()} ft</span>`;
-    return row;
-  }));
+  if (!state.elevationCursor) state.elevationCursor = profile.points[0];
+  if (els.elevationMeta) {
+    els.elevationMeta.textContent = `${Math.round(profile.minFt).toLocaleString()}-${Math.round(profile.maxFt).toLocaleString()} ft | ${(route.gainFt || profile.gainFt).toLocaleString()} ft gain`;
+  }
+  const chart = document.createElement("div");
+  chart.className = "altitude-chart";
+  chart.innerHTML = altitudeChartSvg(profile, route.color || "#2f7b58");
+  chart.addEventListener("mousemove", (event) => setElevationCursorFromProfile(event, profile));
+  chart.addEventListener("mouseleave", () => clearElevationCursor());
+  const stats = document.createElement("div");
+  stats.className = "altitude-stats";
+  stats.innerHTML = `
+    <span><strong>${Math.round(profile.minFt).toLocaleString()} ft</strong><em>low</em></span>
+    <span><strong>${Math.round(profile.maxFt).toLocaleString()} ft</strong><em>high</em></span>
+    <span><strong>${(route.gainFt || Math.round(profile.gainFt)).toLocaleString()} ft</strong><em>listed gain</em></span>
+    <span><strong>${profile.distanceMi.toFixed(profile.distanceMi >= 10 ? 0 : 1)} mi</strong><em>trace length</em></span>`;
+  els.elevationBars.replaceChildren(chart, stats);
+  updateElevationCursorDisplay();
+}
+
+function routeElevationProfile(route) {
+  const samples = [];
+  let distanceMi = 0;
+  let lastCoord = null;
+  for (const day of route.days || []) {
+    for (const coord of day.coords || []) {
+      if (!Number.isFinite(coord?.[2])) {
+        lastCoord = coord;
+        continue;
+      }
+      if (lastCoord) distanceMi += coordinateDistanceMi(lastCoord, coord);
+      samples.push({ distanceMi, elevationFt: coord[2] * 3.28084, coord });
+      lastCoord = coord;
+    }
+  }
+  if (samples.length < 2) return { points: [] };
+  const elevations = samples.map((point) => point.elevationFt);
+  const minFt = Math.min(...elevations);
+  const maxFt = Math.max(...elevations);
+  if (!Number.isFinite(minFt) || !Number.isFinite(maxFt) || maxFt - minFt < 20) return { points: [] };
+  const points = displayProfilePoints(samples, 180);
+  let gainFt = 0;
+  for (let index = 1; index < samples.length; index += 1) {
+    const rise = samples[index].elevationFt - samples[index - 1].elevationFt;
+    if (rise > 0) gainFt += rise;
+  }
+  return { points, minFt, maxFt, gainFt: Math.round(gainFt), distanceMi };
+}
+
+function displayProfilePoints(points, maxPoints) {
+  if (points.length <= maxPoints) return points;
+  const sampled = [];
+  const step = Math.ceil(points.length / Math.max(2, maxPoints - 1));
+  for (let index = 0; index < points.length; index += step) sampled.push(points[index]);
+  const last = points[points.length - 1];
+  if (sampled[sampled.length - 1] !== last) sampled.push(last);
+  return sampled;
+}
+
+function altitudeChartSvg(profile, color) {
+  const width = 900;
+  const height = 190;
+  const padX = 22;
+  const padY = 18;
+  const range = Math.max(1, profile.maxFt - profile.minFt);
+  const maxDistance = Math.max(0.1, profile.distanceMi);
+  const points = profile.points.map((point) => {
+    const x = padX + (point.distanceMi / maxDistance) * (width - padX * 2);
+    const y = height - padY - ((point.elevationFt - profile.minFt) / range) * (height - padY * 2);
+    return [x, y];
+  });
+  const line = points.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+  const area = `${padX},${height - padY} ${line} ${width - padX},${height - padY}`;
+  const lowLabel = `${Math.round(profile.minFt).toLocaleString()} ft`;
+  const highLabel = `${Math.round(profile.maxFt).toLocaleString()} ft`;
+  return `
+    <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Route altitude trace from ${escapeHtml(lowLabel)} to ${escapeHtml(highLabel)}">
+      <line class="altitude-grid" x1="${padX}" y1="${padY}" x2="${width - padX}" y2="${padY}"></line>
+      <line class="altitude-grid" x1="${padX}" y1="${height - padY}" x2="${width - padX}" y2="${height - padY}"></line>
+      <polygon class="altitude-area" points="${area}" style="fill:${escapeHtml(color)}"></polygon>
+      <polyline class="altitude-line" points="${line}" style="stroke:${escapeHtml(color)}"></polyline>
+      <g class="altitude-cursor" hidden>
+        <line y1="${padY}" y2="${height - padY}"></line>
+        <circle r="6"></circle>
+        <text class="altitude-cursor-label" y="${padY + 16}"></text>
+      </g>
+      <text x="${padX}" y="13">${escapeHtml(highLabel)}</text>
+      <text x="${padX}" y="${height - 4}">${escapeHtml(lowLabel)}</text>
+      <text x="${width - padX}" y="${height - 4}" text-anchor="end">${escapeHtml(profile.distanceMi.toFixed(profile.distanceMi >= 10 ? 0 : 1))} mi</text>
+    </svg>`;
+}
+
+function setElevationCursorFromMap(event, route, projection) {
+  const profile = routeElevationProfile(route);
+  if (!profile.points.length) return;
+  const rect = els.map.getBoundingClientRect();
+  const target = [event.clientX - rect.left, event.clientY - rect.top];
+  let best = profile.points[0];
+  let bestDistance = Infinity;
+  for (const point of profile.points) {
+    const projected = project(point.coord, projection);
+    const distance = (projected[0] - target[0]) ** 2 + (projected[1] - target[1]) ** 2;
+    if (distance < bestDistance) {
+      best = point;
+      bestDistance = distance;
+    }
+  }
+  setElevationCursor(best);
+}
+
+function setElevationCursorFromProfile(event, profile) {
+  const svg = event.currentTarget.querySelector("svg");
+  if (!svg || !profile.points.length) return;
+  const rect = svg.getBoundingClientRect();
+  const ratio = clamp((event.clientX - rect.left) / Math.max(1, rect.width), 0, 1);
+  const targetDistance = ratio * profile.distanceMi;
+  let best = profile.points[0];
+  let bestDistance = Infinity;
+  for (const point of profile.points) {
+    const distance = Math.abs(point.distanceMi - targetDistance);
+    if (distance < bestDistance) {
+      best = point;
+      bestDistance = distance;
+    }
+  }
+  setElevationCursor(best);
+}
+
+function setElevationCursor(point) {
+  state.elevationCursor = point;
+  updateElevationCursorDisplay();
+}
+
+function clearElevationCursor() {
+  state.elevationCursor = null;
+  updateElevationCursorDisplay();
+}
+
+function appendElevationMapMarker(fragment, projection) {
+  if (!state.elevationCursor?.coord) return;
+  const [x, y] = project(state.elevationCursor.coord, projection);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+  const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+  g.setAttribute("class", "elevation-map-cursor");
+  g.setAttribute("transform", `translate(${x.toFixed(1)} ${y.toFixed(1)})`);
+  const halo = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  halo.setAttribute("r", "11");
+  halo.setAttribute("class", "elevation-map-halo");
+  const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  dot.setAttribute("r", "5");
+  const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+  title.textContent = elevationCursorLabel(state.elevationCursor);
+  g.append(halo, dot, title);
+  fragment.appendChild(g);
+}
+
+function updateElevationCursorDisplay() {
+  updateElevationProfileCursor();
+  updateElevationMapCursor();
+}
+
+function updateElevationProfileCursor() {
+  const route = selectedRoute();
+  const profile = route ? routeElevationProfile(route) : { points: [] };
+  const cursor = state.elevationCursor;
+  const group = document.querySelector(".altitude-cursor");
+  if (!group || !cursor || !profile.points.length) {
+    group?.setAttribute("hidden", "");
+    return;
+  }
+  const width = 900;
+  const height = 190;
+  const padX = 22;
+  const padY = 18;
+  const range = Math.max(1, profile.maxFt - profile.minFt);
+  const maxDistance = Math.max(0.1, profile.distanceMi);
+  const x = padX + (cursor.distanceMi / maxDistance) * (width - padX * 2);
+  const y = height - padY - ((cursor.elevationFt - profile.minFt) / range) * (height - padY * 2);
+  group.removeAttribute("hidden");
+  group.querySelector("line")?.setAttribute("x1", x.toFixed(1));
+  group.querySelector("line")?.setAttribute("x2", x.toFixed(1));
+  group.querySelector("circle")?.setAttribute("cx", x.toFixed(1));
+  group.querySelector("circle")?.setAttribute("cy", y.toFixed(1));
+  const label = group.querySelector("text");
+  if (label) {
+    label.setAttribute("x", String(Math.min(width - 150, Math.max(padX, x + 9))));
+    label.textContent = elevationCursorLabel(cursor);
+  }
+}
+
+function updateElevationMapCursor() {
+  const route = selectedRoute();
+  const marker = document.querySelector(".elevation-map-cursor");
+  if (!marker) return;
+  if (!route || !state.elevationCursor?.coord) {
+    marker.setAttribute("hidden", "");
+    return;
+  }
+  const projection = projectionContext(els.map.getBoundingClientRect());
+  const [x, y] = project(state.elevationCursor.coord, projection);
+  marker.removeAttribute("hidden");
+  marker.setAttribute("transform", `translate(${x.toFixed(1)} ${y.toFixed(1)})`);
+  const title = marker.querySelector("title");
+  if (title) title.textContent = elevationCursorLabel(state.elevationCursor);
+}
+
+function elevationCursorLabel(point) {
+  return `${point.distanceMi.toFixed(point.distanceMi >= 10 ? 0 : 1)} mi | ${Math.round(point.elevationFt).toLocaleString()} ft`;
+}
+
+function coordinateDistanceMi(a, b) {
+  const toRad = (value) => value * Math.PI / 180;
+  const radiusMi = 3958.8;
+  const dLat = toRad((b?.[1] || 0) - (a?.[1] || 0));
+  const dLon = toRad((b?.[0] || 0) - (a?.[0] || 0));
+  const lat1 = toRad(a?.[1] || 0);
+  const lat2 = toRad(b?.[1] || 0);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+  return 2 * radiusMi * Math.asin(Math.min(1, Math.sqrt(h)));
 }
 
 function renderSourceNotes() {
