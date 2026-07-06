@@ -45,7 +45,9 @@ const state = {
     dragStart: null,
     dragCenter: null,
     dragLast: null,
+    dragMoved: false,
     dragLastTime: 0,
+    suppressClickUntil: 0,
     panVelocity: [0, 0],
     inertiaFrame: null,
     inertiaLastTime: 0,
@@ -85,7 +87,7 @@ const MAX_LOCAL_STORAGE_CACHE_BYTES = 1_500_000;
 const OVERVIEW_ROUTE_POINTS = 260;
 const OVERVIEW_HIGHLIGHT_POINTS = 1000;
 const DETAIL_ROUTE_POINTS = 6000;
-const DATA_VERSION = "20260705-edge-altitude-2";
+const DATA_VERSION = "20260705-less-sensitive-route-click-1";
 const CAMPSITE_DATA_PATH = "california_route_stay_inventory.geojson";
 const STATIC_DATA_PREFIXES = [
   "data",
@@ -272,19 +274,15 @@ function setupMapInteractions() {
     state.dispersedAreasNotice = "";
     drawMap();
   });
-  els.routeSvg.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0) return;
-    const routeId = event.target.closest?.(".route-line")?.dataset?.route;
-    if (!routeId) return;
-    focusRouteIdFromMap(routeId, event);
-  }, { capture: true });
   els.routeSvg.addEventListener("click", (event) => {
+    if (shouldSuppressRouteClick(event)) return;
     const routeId = routeIdFromMapEvent(event);
     if (!routeId) return;
     focusRouteIdFromMap(routeId, event);
   });
   els.map.addEventListener("click", (event) => {
     if (state.map.dragging) return;
+    if (shouldSuppressRouteClick(event)) return;
     if (event.target.closest(".map-layer-controls, .map-legend, .map-hint, .campsite-popup, .campsite-marker")) return;
     const routeId = routeIdFromMapEvent(event);
     if (!routeId) return;
@@ -294,7 +292,6 @@ function setupMapInteractions() {
     if (event.button !== 0) return;
     if (event.target.closest(".map-layer-controls, .map-legend, .map-hint, .campsite-popup")) return;
     if (event.target.closest(".campsite-marker")) return;
-    if (event.target.closest(".route-line")) return;
     state.selectedCampsiteId = null;
     stopPanInertia();
     commitMapPreview();
@@ -302,6 +299,7 @@ function setupMapInteractions() {
     state.map.dragStart = [event.clientX, event.clientY];
     state.map.dragCenter = [...state.map.center];
     state.map.dragLast = [event.clientX, event.clientY];
+    state.map.dragMoved = false;
     state.map.dragLastTime = performance.now();
     state.map.panVelocity = [0, 0];
     els.map.classList.add("is-dragging");
@@ -312,6 +310,7 @@ function setupMapInteractions() {
     const [startX, startY] = state.map.dragStart;
     const dx = event.clientX - startX;
     const dy = event.clientY - startY;
+    if (Math.hypot(dx, dy) > 6) state.map.dragMoved = true;
     const startWorld = lonLatToWorld(state.map.dragCenter[0], state.map.dragCenter[1], state.map.zoom);
     state.map.center = worldToLonLat(startWorld[0] - dx, startWorld[1] - dy, state.map.zoom);
     updatePanVelocity(event);
@@ -320,11 +319,14 @@ function setupMapInteractions() {
   for (const eventName of ["pointerup", "pointercancel", "pointerleave"]) {
     els.map.addEventListener(eventName, (event) => {
       if (!state.map.dragging) return;
+      const moved = state.map.dragMoved;
       state.map.dragging = false;
+      state.map.dragMoved = false;
       els.map.classList.remove("is-dragging");
       if (event.pointerId !== undefined && els.map.hasPointerCapture(event.pointerId)) {
         els.map.releasePointerCapture(event.pointerId);
       }
+      if (moved) state.map.suppressClickUntil = performance.now() + 280;
       if (!startPanInertia()) scheduleMapCommit(70);
     });
   }
@@ -1224,8 +1226,14 @@ function focusRouteIdFromMap(routeId, event = null) {
 
 function routeIdFromMapEvent(event) {
   return event.target.closest?.(".route-line")?.dataset?.route
-    || state.highlightedRouteId
     || nearestRouteIdAtClientPoint(event.clientX, event.clientY);
+}
+
+function shouldSuppressRouteClick(event) {
+  if (performance.now() > state.map.suppressClickUntil) return false;
+  event?.preventDefault();
+  event?.stopPropagation();
+  return true;
 }
 
 function nearestRouteIdAtClientPoint(clientX, clientY) {
@@ -1248,7 +1256,7 @@ function nearestRouteIdAtClientPoint(clientX, clientY) {
       }
     }
   }
-  return best.distanceSq <= 24 ** 2 ? best.routeId : "";
+  return best.distanceSq <= 16 ** 2 ? best.routeId : "";
 }
 
 function pointToSegmentDistanceSq(point, a, b) {
@@ -1542,7 +1550,12 @@ function appendPath(coords, color, options = {}, target = els.routeSvg, projecti
     title.textContent = options.title;
     path.appendChild(title);
   }
-  if (options.onClick) path.addEventListener("click", options.onClick);
+  if (options.onClick) {
+    path.addEventListener("click", (event) => {
+      if (shouldSuppressRouteClick(event)) return;
+      options.onClick(event);
+    });
+  }
   if (options.onEnter) path.addEventListener("mouseenter", options.onEnter);
   if (options.onLeave) path.addEventListener("mouseleave", options.onLeave);
   if (options.onMove) path.addEventListener("mousemove", options.onMove);
