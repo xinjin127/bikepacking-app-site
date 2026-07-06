@@ -84,7 +84,7 @@ const MAX_LOCAL_STORAGE_CACHE_BYTES = 1_500_000;
 const OVERVIEW_ROUTE_POINTS = 260;
 const OVERVIEW_HIGHLIGHT_POINTS = 1000;
 const DETAIL_ROUTE_POINTS = 6000;
-const DATA_VERSION = "20260705-all-routes-dispersed-1";
+const DATA_VERSION = "20260705-clickable-overview-cards-1";
 const CAMPSITE_DATA_PATH = "california_route_stay_inventory.geojson";
 const BLM_CA_SMA_QUERY_URL = "https://gis.blm.gov/caarcgis/rest/services/lands/BLM_CA_LandStatus_SurfaceManagementAgency/FeatureServer/0/query";
 const CRC32_TABLE = Array.from({ length: 256 }, (_, index) => {
