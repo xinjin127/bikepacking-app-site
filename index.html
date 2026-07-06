@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Bikepacking Route Library</title>
-  <link rel="stylesheet" href="styles.css?v=20260705-linked-altitude-1">
+  <link rel="stylesheet" href="styles.css?v=20260705-edge-altitude-2">
 </head>
 <body>
   <main class="app-shell">
@@ -142,11 +142,6 @@
           <svg id="dispersedSvg" class="dispersed-svg" role="img" aria-label="Candidate dispersed camping public land"></svg>
           <svg id="routeSvg" class="route-svg" role="img" aria-label="Route geometry"></svg>
           <svg id="campsiteSvg" class="campsite-svg" role="img" aria-label="Campsite locations"></svg>
-          <div class="map-controls" aria-label="Map controls">
-            <button type="button" id="zoomIn" aria-label="Zoom in">+</button>
-            <button type="button" id="zoomOut" aria-label="Zoom out">-</button>
-            <button type="button" id="fitMap" aria-label="Fit selected routes">Fit</button>
-          </div>
           <div class="map-layer-controls" aria-label="Map layers">
             <label class="basemap-control">
               <span>Map</span>
@@ -210,6 +205,14 @@
       </section>
     </section>
 
+    <section class="detail-panel external-source-panel">
+      <div class="panel-heading">
+        <h2>External Route Sources</h2>
+        <span id="externalSourceMeta">non-Bikepacking leads</span>
+      </div>
+      <div id="externalSources" class="external-sources"></div>
+    </section>
+
     <div hidden>
       <span id="editStatus"></span>
       <form id="editForm">
@@ -219,8 +222,8 @@
       </form>
       <section id="sourceNotes"></section>
     </div>
-    <footer class="build-footer">Build: 2026-07-05 linked-altitude-1</footer>
+    <footer class="build-footer">Build: 2026-07-05 edge-altitude-2</footer>
   </main>
-  <script src="app.js?v=20260705-linked-altitude-1"></script>
+  <script src="app.js?v=20260705-edge-altitude-2"></script>
 </body>
 </html>

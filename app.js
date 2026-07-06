@@ -85,8 +85,17 @@ const MAX_LOCAL_STORAGE_CACHE_BYTES = 1_500_000;
 const OVERVIEW_ROUTE_POINTS = 260;
 const OVERVIEW_HIGHLIGHT_POINTS = 1000;
 const DETAIL_ROUTE_POINTS = 6000;
-const DATA_VERSION = "20260705-linked-altitude-1";
+const DATA_VERSION = "20260705-edge-altitude-2";
 const CAMPSITE_DATA_PATH = "california_route_stay_inventory.geojson";
+const STATIC_DATA_PREFIXES = [
+  "data",
+  "../data",
+  "docs/data",
+  "../docs/data",
+  "../../docs/data",
+  "/data",
+  "/docs/data",
+];
 const BLM_CA_SMA_QUERY_URL = "https://gis.blm.gov/caarcgis/rest/services/lands/BLM_CA_LandStatus_SurfaceManagementAgency/FeatureServer/0/query";
 const CRC32_TABLE = Array.from({ length: 256 }, (_, index) => {
   let crc = index;
@@ -147,9 +156,6 @@ const els = {
   routeSvg: document.querySelector("#routeSvg"),
   dispersedSvg: document.querySelector("#dispersedSvg"),
   campsiteSvg: document.querySelector("#campsiteSvg"),
-  zoomIn: document.querySelector("#zoomIn"),
-  zoomOut: document.querySelector("#zoomOut"),
-  fitMap: document.querySelector("#fitMap"),
   basemapSelect: document.querySelector("#basemapSelect"),
   dispersedLayerToggle: document.querySelector("#dispersedLayerToggle"),
   campsitePopup: document.querySelector("#campsitePopup"),
@@ -161,6 +167,8 @@ const els = {
   reviewPanel: document.querySelector("#reviewPanel"),
   resourceMeta: document.querySelector("#resourceMeta"),
   resourcePanel: document.querySelector("#resourcePanel"),
+  externalSourceMeta: document.querySelector("#externalSourceMeta"),
+  externalSources: document.querySelector("#externalSources"),
   variants: document.querySelector("#variants"),
   variantMeta: document.querySelector("#variantMeta"),
   elevationMeta: document.querySelector("#elevationMeta"),
@@ -250,19 +258,6 @@ async function init() {
 }
 
 function setupMapInteractions() {
-  els.zoomIn?.addEventListener("click", () => {
-    stopPanInertia();
-    zoomBy(0.5);
-  });
-  els.zoomOut?.addEventListener("click", () => {
-    stopPanInertia();
-    zoomBy(-0.5);
-  });
-  els.fitMap?.addEventListener("click", () => {
-    stopPanInertia();
-    fitToRoutes(selectedRoute() ? [selectedRoute()] : filteredRoutes());
-    drawMap();
-  });
   els.basemapSelect.addEventListener("change", () => {
     state.basemap = els.basemapSelect.value in TILE_PROVIDERS ? els.basemapSelect.value : "fast";
     localStorage.setItem("bikepacking_planner:basemap", state.basemap);
@@ -290,14 +285,14 @@ function setupMapInteractions() {
   });
   els.map.addEventListener("click", (event) => {
     if (state.map.dragging) return;
-    if (event.target.closest(".map-controls, .map-layer-controls, .map-legend, .map-hint, .campsite-popup, .campsite-marker")) return;
+    if (event.target.closest(".map-layer-controls, .map-legend, .map-hint, .campsite-popup, .campsite-marker")) return;
     const routeId = routeIdFromMapEvent(event);
     if (!routeId) return;
     focusRouteIdFromMap(routeId, event);
   });
   els.map.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return;
-    if (event.target.closest(".map-controls, .map-layer-controls, .map-legend, .map-hint, .campsite-popup")) return;
+    if (event.target.closest(".map-layer-controls, .map-legend, .map-hint, .campsite-popup")) return;
     if (event.target.closest(".campsite-marker")) return;
     if (event.target.closest(".route-line")) return;
     state.selectedCampsiteId = null;
@@ -427,13 +422,11 @@ async function fetchJson(url) {
   const withVersion = (path) => `${path}${path.includes("?") ? "&" : "?"}v=${DATA_VERSION}`;
   const candidates = [];
   if (url === "/api/trips") {
-    candidates.push("data/trips/index.json");
-    candidates.push("../data/trips/index.json");
+    candidates.push(...staticDataCandidates("trips/index.json"));
     candidates.push(url);
   } else if (url.startsWith("/api/trips/")) {
     const tripId = encodeURIComponent(url.split("/").pop());
-    candidates.push(`data/trips/${tripId}.json`);
-    candidates.push(`../data/trips/${tripId}.json`);
+    candidates.push(...staticDataCandidates(`trips/${tripId}.json`));
     candidates.push(url);
   } else {
     candidates.push(url);
@@ -455,11 +448,10 @@ async function fetchJson(url) {
 
 async function loadCampsites() {
   if (state.campsitesLoaded) return;
-  const candidates = [
-    `data/campsites/${CAMPSITE_DATA_PATH}`,
-    `../data/campsites/${CAMPSITE_DATA_PATH}`,
+  const candidates = uniqueCandidates([
+    ...staticDataCandidates(`campsites/${CAMPSITE_DATA_PATH}`),
     `../../research/campsites/${CAMPSITE_DATA_PATH}`,
-  ];
+  ]);
   const errors = [];
   for (const candidate of candidates) {
     try {
@@ -549,10 +541,7 @@ function recallJson(url) {
 function routeDetailCandidates(route) {
   const detailPath = route.detailPath || `routes/${route.id}.json`;
   const basePath = state.trip?.detailBasePath || `${state.trip?.id || "route-library"}/`;
-  return [
-    `data/trips/${basePath}${detailPath}`,
-    `../data/trips/${basePath}${detailPath}`,
-  ];
+  return staticDataCandidates(`trips/${basePath}${detailPath}`);
 }
 
 function routeHasFullDetail(route) {
@@ -590,6 +579,14 @@ async function hydrateRoutes(routes) {
 
 function cacheKey(url) {
   return `bikepacking_planner:last_good:${url}`;
+}
+
+function staticDataCandidates(relativePath) {
+  return uniqueCandidates(STATIC_DATA_PREFIXES.map((prefix) => `${prefix}/${relativePath}`));
+}
+
+function uniqueCandidates(candidates) {
+  return [...new Set(candidates)];
 }
 
 function delay(ms) {
@@ -1279,6 +1276,7 @@ function drawAll() {
   renderReviewPanel();
   renderResourcePanel();
   renderElevation();
+  renderExternalSources();
   renderSourceNotes();
   drawMap();
 }
@@ -1992,7 +1990,42 @@ function renderResourcePanel() {
       </div>
     </div>
     ${listBlock("Hazards", route.hazards)}
-    ${listBlock("Route tips", route.tips)}`;
+	    ${listBlock("Route tips", route.tips)}`;
+}
+
+function renderExternalSources() {
+  if (!els.externalSources) return;
+  const sources = state.trip?.externalRouteSources || [];
+  if (els.externalSourceMeta) {
+    const lowerFriction = sources.filter((source) => !/restricted|paid|manual/i.test(source.geometryAccess || "")).length;
+    els.externalSourceMeta.textContent = `${sources.length} leads | ${lowerFriction} lower-friction`;
+  }
+  if (!sources.length) {
+    els.externalSources.innerHTML = "<p class=\"route-note\">No external route sources have been catalogued yet.</p>";
+    return;
+  }
+  els.externalSources.innerHTML = sources.map((source) => {
+    const candidates = (source.candidateRoutes || []).slice(0, 5).map((route) => `<span>${escapeHtml(route)}</span>`).join("");
+    const extraCount = Math.max(0, (source.candidateRoutes || []).length - 5);
+    return `
+      <article class="external-source-card">
+        <div class="external-source-card-header">
+          <div>
+            <h3>${escapeHtml(source.name)}</h3>
+            <p>${escapeHtml(source.sourceName || "External source")} | ${escapeHtml(source.region || "California")}</p>
+          </div>
+          <span class="status-chip ${escapeHtml(externalStatusClass(source.status))}">${escapeHtml(externalStatusLabel(source.status))}</span>
+        </div>
+        <p>${escapeHtml(source.whyUseful || "")}</p>
+        <div class="source-lead-tags">${candidates}${extraCount ? `<span>+${extraCount} more</span>` : ""}</div>
+        <div class="external-source-gate">
+          <strong>${escapeHtml(externalAccessLabel(source.geometryAccess))}</strong>
+          <span>${escapeHtml(source.gate || "")}</span>
+        </div>
+        <a class="source-link compact" href="${escapeHtml(source.sourceUrl)}" target="_blank" rel="noopener noreferrer"><span>Source</span> ${escapeHtml(source.sourceName || "Open source")} <em>↗</em></a>
+      </article>
+    `;
+  }).join("");
 }
 
 function checkItem(label, value, note = "") {
@@ -2124,7 +2157,7 @@ function displayProfilePoints(points, maxPoints) {
 function altitudeChartSvg(profile, color) {
   const width = 900;
   const height = 190;
-  const padX = 22;
+  const padX = 0;
   const padY = 18;
   const range = Math.max(1, profile.maxFt - profile.minFt);
   const maxDistance = Math.max(0.1, profile.distanceMi);
@@ -2148,9 +2181,9 @@ function altitudeChartSvg(profile, color) {
         <circle r="6"></circle>
         <text class="altitude-cursor-label" y="${padY + 16}"></text>
       </g>
-      <text x="${padX}" y="13">${escapeHtml(highLabel)}</text>
-      <text x="${padX}" y="${height - 4}">${escapeHtml(lowLabel)}</text>
-      <text x="${width - padX}" y="${height - 4}" text-anchor="end">${escapeHtml(profile.distanceMi.toFixed(profile.distanceMi >= 10 ? 0 : 1))} mi</text>
+      <text x="4" y="13">${escapeHtml(highLabel)}</text>
+      <text x="4" y="${height - 4}">${escapeHtml(lowLabel)}</text>
+      <text x="${width - 4}" y="${height - 4}" text-anchor="end">${escapeHtml(profile.distanceMi.toFixed(profile.distanceMi >= 10 ? 0 : 1))} mi</text>
     </svg>`;
 }
 
@@ -2234,7 +2267,7 @@ function updateElevationProfileCursor() {
   }
   const width = 900;
   const height = 190;
-  const padX = 22;
+  const padX = 0;
   const padY = 18;
   const range = Math.max(1, profile.maxFt - profile.minFt);
   const maxDistance = Math.max(0.1, profile.distanceMi);
@@ -2247,7 +2280,7 @@ function updateElevationProfileCursor() {
   group.querySelector("circle")?.setAttribute("cy", y.toFixed(1));
   const label = group.querySelector("text");
   if (label) {
-    label.setAttribute("x", String(Math.min(width - 150, Math.max(padX, x + 9))));
+    label.setAttribute("x", String(Math.min(width - 150, Math.max(4, x + 9))));
     label.textContent = elevationCursorLabel(cursor);
   }
 }
@@ -3441,6 +3474,32 @@ function isOperationalGateSource(source = {}) {
     "reservation",
     "state parks",
   ].some((needle) => haystack.includes(needle));
+}
+
+function externalStatusLabel(value = "") {
+  return {
+    source_identified: "source identified",
+    manual_download_only: "manual download",
+    candidate_generator: "candidate source",
+  }[value] || String(value || "source lead").replace(/_/g, " ");
+}
+
+function externalStatusClass(value = "") {
+  if (value === "manual_download_only") return "blocked";
+  if (value === "candidate_generator") return "candidate";
+  return "concept";
+}
+
+function externalAccessLabel(value = "") {
+  return {
+    paid_maps_or_digital_route: "Geometry access: paid/manual",
+    free_map_interface: "Geometry access: free map interface",
+    free_form_download_restricted_terms: "Geometry access: restricted personal GPX",
+    public_route_pages: "Geometry access: public route pages",
+    official_maps_no_gpx: "Geometry access: official maps, no GPX",
+    official_maps_plus_user_routes: "Geometry access: official maps + user routes",
+    event_course_pages: "Geometry access: event course pages",
+  }[value] || `Geometry access: ${String(value || "unknown").replace(/_/g, " ")}`;
 }
 
 function monthToSeason(month) {
