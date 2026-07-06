@@ -11,7 +11,7 @@
     <header class="topbar">
       <div>
         <h1>Bikepacking Route Library</h1>
-        <p id="tripDescription">Browse route ideas, then choose dates, region, and trip style to see what deserves a closer planning check.</p>
+        <p id="tripDescription">Browse route candidates, then choose dates, region, and trip style to see which operational gates need checking.</p>
       </div>
       <div class="trip-picker">
         <label for="tripSelect">Trip</label>
@@ -87,18 +87,18 @@
           <select id="readinessFilter">
             <option value="all">All readiness</option>
             <option value="best">Best candidates</option>
-            <option value="near">Near ride-ready</option>
+            <option value="near">Near gate-confirmed</option>
             <option value="candidate">Needs refresh</option>
             <option value="blocked">Blocked / rework</option>
           </select>
         </label>
         <label>
-          Status
+          Maturity
           <select id="statusFilter">
-            <option value="all">All statuses</option>
-            <option value="idea">Ideas</option>
-            <option value="planning_grade">Planning-grade</option>
-            <option value="ride_ready">Ride-ready</option>
+            <option value="all">All maturity</option>
+            <option value="candidate">Candidate</option>
+            <option value="concept">Concept</option>
+            <option value="plan_ready">Plan Ready</option>
           </select>
         </label>
       </div>

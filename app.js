@@ -280,7 +280,7 @@ async function loadTrip(tripId) {
   state.selectedRouteId = "__all";
   state.highlightedRouteId = null;
   state.activeVariants.clear();
-  els.tripDescription.textContent = "Browse route ideas, then choose dates, region, and trip style to see what deserves a closer planning check.";
+  els.tripDescription.textContent = "Browse route candidates, then choose dates, region, and trip style to see which operational gates need checking.";
   renderRegionOptions();
   renderStyleFilters();
   renderGroupTabs();
@@ -535,24 +535,32 @@ function renderLibraryStats() {
   const routes = state.trip?.routes || [];
   const archived = state.trip?.archivedCandidates || [];
   const matchingRoutes = filteredRoutes();
-  const counts = routes.reduce((acc, route) => {
-    acc[route.status || "idea"] = (acc[route.status || "idea"] || 0) + 1;
+  const maturityCounts = routes.reduce((acc, route) => {
+    const key = routeMaturity(route);
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+  const gateCounts = routes.reduce((acc, route) => {
+    const key = routeGateStatus(route);
+    acc[key] = (acc[key] || 0) + 1;
     return acc;
   }, {});
   const summary = filteredReadinessSummary(matchingRoutes);
   const chips = [
     statChip(`${matchingRoutes.length} matching`, "library"),
     statChip(`${routes.length} total routes`, "library"),
-    statChip(`${counts.ride_ready || 0} ride-ready`, "ride_ready"),
-    statChip(`${summary.needsRefreshCount || 0} need refresh`, "planning_grade"),
-    statChip(`${counts.planning_grade || 0} planning-grade`, "planning_grade"),
-    statChip(`${counts.idea || 0} ideas`, "idea"),
+    statChip(`${maturityCounts.plan_ready || 0} plan ready`, "plan_ready"),
+    statChip(`${maturityCounts.concept || 0} concepts`, "concept"),
+    statChip(`${maturityCounts.candidate || 0} candidates`, "candidate"),
+    statChip(`${gateCounts.confirmed || 0} gate confirmed`, "confirmed"),
+    statChip(`${summary.gateBlockedCount || 0} blocked`, "blocked"),
+    statChip(`${summary.gatePartialCount || 0} partial`, "partial"),
   ];
   if (isCaliforniaContext()) {
     const californiaRoutes = matchingRoutes.filter(isCaliforniaPriority);
-    chips.push(statChip(`${californiaRoutes.length} California matches`, "planning_grade"));
+    chips.push(statChip(`${californiaRoutes.length} California matches`, "plan_ready"));
   }
-  if (archived.length) chips.push(statChip(`${archived.length} rough leads archived`, "idea"));
+  if (archived.length) chips.push(statChip(`${archived.length} rough leads archived`, "candidate"));
   els.libraryStats.replaceChildren(...chips);
 }
 
@@ -566,7 +574,7 @@ function renderActiveFilterSummary() {
   if (state.difficultyFilter !== "all") parts.push(`difficulty: ${state.difficultyFilter}`);
   if (state.gravelFilter !== "all") parts.push(`surface: ${state.gravelFilter}`);
   if (state.readinessFilter !== "all") parts.push(`readiness: ${state.readinessFilter}`);
-  if (state.statusFilter !== "all") parts.push(`status: ${labelStatus(state.statusFilter)}`);
+  if (state.statusFilter !== "all") parts.push(`maturity: ${labelMaturity(state.statusFilter)}`);
   for (const style of state.tripStyleFilters) {
     parts.push(`style: ${STYLE_FILTERS.find((item) => item.id === style)?.label || style}`);
   }
@@ -590,9 +598,9 @@ function renderReadinessDashboard() {
     : "no blocker data";
   els.readinessDashboard.innerHTML = `
     <span><strong>${summary.routeCount || 0}</strong> ${snapshotLabel} matches</span>
-    <span><strong>${summary.rideReadyCount || 0}</strong> ride-ready</span>
-    <span><strong>${summary.planningGradeCount || 0}</strong> planning-grade</span>
-    <span><strong>${summary.needsRefreshCount || 0}</strong> need refresh</span>
+    <span><strong>${summary.planReadyCount || 0}</strong> plan ready</span>
+    <span><strong>${summary.gateConfirmedCount || 0}</strong> gate confirmed</span>
+    <span><strong>${summary.gateBlockedCount || 0}</strong> gate blocked</span>
     <span>top gate: <strong>${escapeHtml(topBlocker)}</strong></span>`;
 }
 
@@ -603,7 +611,13 @@ function filteredReadinessSummary(routes) {
   const regionCounts = {};
   let needsRefreshCount = 0;
   let blockedRouteCount = 0;
+  const maturityCounts = {};
+  const gateStatusCounts = {};
   for (const route of routes) {
+    const maturity = routeMaturity(route);
+    const gateStatus = routeGateStatus(route);
+    maturityCounts[maturity] = (maturityCounts[maturity] || 0) + 1;
+    gateStatusCounts[gateStatus] = (gateStatusCounts[gateStatus] || 0) + 1;
     const checklist = route.promotionChecklist || {};
     regionCounts[route.region || labelGroup(route.group) || "Unmapped"] = (regionCounts[route.region || labelGroup(route.group) || "Unmapped"] || 0) + 1;
     const routeNeedsRefresh = gateKeys.some((key) => checklist[key] === "needs_refresh");
@@ -639,9 +653,12 @@ function filteredReadinessSummary(routes) {
     }));
   return {
     routeCount: routes.length,
-    rideReadyCount: routes.filter((route) => route.status === "ride_ready").length,
-    planningGradeCount: routes.filter((route) => route.status === "planning_grade").length,
-    ideaCount: routes.filter((route) => route.status === "idea").length,
+    candidateCount: maturityCounts.candidate || 0,
+    conceptCount: maturityCounts.concept || 0,
+    planReadyCount: maturityCounts.plan_ready || 0,
+    gateConfirmedCount: gateStatusCounts.confirmed || 0,
+    gatePartialCount: gateStatusCounts.partial || 0,
+    gateBlockedCount: gateStatusCounts.blocked || 0,
     needsRefreshCount,
     blockedRouteCount,
     averageScore: routes.length ? Math.round(routes.reduce((sum, route) => sum + (route.readinessScore?.score || 0), 0) / routes.length * 10) / 10 : 0,
@@ -717,7 +734,7 @@ function currentRouteFilters() {
 function routePassesFilters(route, filters) {
   if (!routeMatchesGroup(route, filters.group)) return false;
   if (!routeMatchesRegion(route, filters.selectedRegion)) return false;
-  if (filters.statusFilter !== "all" && route.status !== filters.statusFilter) return false;
+  if (filters.statusFilter !== "all" && routeMaturity(route) !== filters.statusFilter) return false;
   if (filters.gravelFilter !== "all" && route.gravelLevel !== filters.gravelFilter) return false;
   if (filters.tripLengthFilter !== "all" && !matchesTripLength(route, filters.tripLengthFilter)) return false;
   if (filters.seasonFilter !== "all" && !matchesSeason(route, filters.seasonFilter)) return false;
@@ -806,7 +823,8 @@ function matchesSearch(route, query) {
     route.region,
     route.group,
     route.shape,
-    route.status,
+    route.maturity,
+    route.gateStatus,
     route.surfaceMix,
     route.bestSeason,
     route.description,
@@ -986,7 +1004,8 @@ function renderRouteList() {
         <span class="route-name">${escapeHtml(route.name)}</span>
         <span class="route-meta">${escapeHtml(route.region || labelGroup(route.group))} &middot; ${route.distanceMi || 0} mi &middot; ${(route.gainFt || 0).toLocaleString()} ft &middot; ${route.days.length} days &middot; ${escapeHtml(route.shape || "route")}</span>
         <span class="pill-row primary-pills">
-          <span class="pill ${route.status || "idea"}">${labelStatus(route.status)}</span>
+          <span class="pill ${routeMaturity(route)}">${labelMaturity(routeMaturity(route))}</span>
+          <span class="pill ${routeGateStatus(route)}">${labelGateStatus(routeGateStatus(route))}</span>
           <span class="pill ${rideReadyClearanceClass(route)}">${rideReadyClearanceLabel(route)}</span>
           <span class="pill ${gateChipClass(topGate(route))}">${browseConcernLabel(route)}</span>
           ${route.difficulty ? `<span class="pill">${escapeHtml(route.difficulty)}</span>` : ""}
@@ -1099,11 +1118,11 @@ function drawMap() {
   els.map.classList.toggle("is-overview-zoomed-out", !route && state.map.zoom <= 7);
   els.mapTitle.textContent = route ? route.name : routes.length ? "All Matching Routes" : "No Matching Routes";
   els.mapSubtitle.textContent = route
-    ? `${route.distanceMi || 0} mi | ${(route.gainFt || 0).toLocaleString()} ft | ${route.days.length} days | ${labelStatus(route.status)} | ${labelDecision(route.promotionChecklist?.finalDecision)}`
+    ? `${route.distanceMi || 0} mi | ${(route.gainFt || 0).toLocaleString()} ft | ${route.days.length} days | ${labelMaturity(routeMaturity(route))} | ${labelGateStatus(routeGateStatus(route))}`
     : routes.length ? "Browse all visible routes, then select one for days, resources, variants, and evidence." : "Clear search or loosen filters to restore the map.";
   els.mapQa.textContent = route
-    ? `Before ride-ready: ${gateCountLabel(route)} | ${topGateLabel(route)} | ${rideReadyClearanceLabel(route)}`
-    : planningContextActive() ? "Planning context active: final route-specific checks are still required before departure." : "Date-agnostic browse mode: select a route to inspect planning status and evidence.";
+    ? `Operational gates: ${gateCountLabel(route)} | ${topGateLabel(route)} | ${rideReadyClearanceLabel(route)}`
+    : planningContextActive() ? "Planning context active: final route-specific checks are still required before departure." : "Date-agnostic browse mode: select a route to inspect maturity, gates, and evidence.";
   renderMapLegend(routes);
 
   const drawRoutes = state.highlightedRouteId
@@ -1222,7 +1241,7 @@ function appendWaypoints(waypoints, target = els.routeSvg, projection = projecti
 function renderMapLegend(routes) {
   const items = [];
   for (const route of routes.slice(0, 8)) {
-    items.push({ color: route.color || "#2f7b58", label: route.name, meta: labelStatus(route.status) });
+    items.push({ color: route.color || "#2f7b58", label: route.name, meta: `${labelMaturity(routeMaturity(route))} / ${labelGateStatus(routeGateStatus(route))}` });
   }
   const route = selectedRoute();
   if (route) {
@@ -1259,7 +1278,8 @@ function renderDetails() {
         <strong>${escapeHtml(item.name)}</strong>
         <div class="day-meta">${escapeHtml(item.region || labelGroup(item.group))} &middot; ${item.distanceMi || 0} mi &middot; ${(item.gainFt || 0).toLocaleString()} ft &middot; ${item.days.length} days &middot; ${escapeHtml(item.shape || "route")}</div>
         <span class="pill-row">
-          <span class="pill ${item.status || "idea"}">${labelStatus(item.status)}</span>
+          <span class="pill ${routeMaturity(item)}">${labelMaturity(routeMaturity(item))}</span>
+          <span class="pill ${routeGateStatus(item)}">${labelGateStatus(routeGateStatus(item))}</span>
           <span class="pill ${rideReadyClearanceClass(item)}">${rideReadyClearanceLabel(item)}</span>
           <span class="pill ${gateChipClass(topGate(item))}">${browseConcernLabel(item)}</span>
           <span class="pill">${escapeHtml(item.difficultyProfile?.beginnerSuitability || "fit TBD")}</span>
@@ -1273,7 +1293,7 @@ function renderDetails() {
     return;
   }
   els.detailTitle.textContent = route.name;
-  els.detailMeta.textContent = `route overview | ${route.days.length} days | ${labelStatus(route.status)}`;
+  els.detailMeta.textContent = `route overview | ${route.days.length} days | ${labelMaturity(routeMaturity(route))} | ${labelGateStatus(routeGateStatus(route))}`;
   const overview = document.createElement("div");
   overview.className = "overview-card route-overview-card";
   overview.innerHTML = `
@@ -1287,19 +1307,20 @@ function renderDetails() {
       ${overviewFact("Best season", route.bestSeason)}
     </div>
     <span class="pill-row primary-pills">
-      <span class="pill ${route.status || "idea"}">${labelStatus(route.status)}</span>
+      <span class="pill ${routeMaturity(route)}">${labelMaturity(routeMaturity(route))}</span>
+      <span class="pill ${routeGateStatus(route)}">${labelGateStatus(routeGateStatus(route))}</span>
       <span class="pill ${rideReadyClearanceClass(route)}">${rideReadyClearanceLabel(route)}</span>
       <span class="pill ${gateChipClass(topGate(route))}">${browseConcernLabel(route)}</span>
       <span class="pill ${route.sourceQuality}">${labelQuality(route.sourceQuality)}</span>
     </span>
     ${sourceLinkHtml(route)}
-    <div class="planning-status ${route.status === "ride_ready" ? "pass" : ""}">
-      <strong>Planning status</strong>
-      <span>${route.status === "ride_ready" ? "Ride-ready based on current imported evidence." : "Useful planning material, not ride-ready until route-specific checks are refreshed."}</span>
+    <div class="planning-status ${routeGateStatus(route) === "confirmed" ? "pass" : ""}">
+      <strong>Maturity & operational gates</strong>
+      <span>${routeGateStatus(route) === "confirmed" ? "Every gate is confirmed for the selected departure window." : "Route research maturity is separate from date-specific rideability."}</span>
       <div class="route-overview-grid">
         ${overviewFact("Main thing to verify", browseConcernLabel(route))}
         ${overviewFact("Open checks", gateCountLabel(route))}
-        ${overviewFact("Ride-ready clearance", rideReadyClearanceLabel(route))}
+        ${overviewFact("Gate status", labelGateStatus(routeGateStatus(route)))}
       </div>
       <div class="gate-strip">${gateChipsHtml(route, 5)}</div>
     </div>
@@ -1337,7 +1358,7 @@ function renderReviewPanel() {
   els.reviewMeta.textContent = review.decision || "needs review";
   const openAttr = shouldOpenEvidenceDetails() ? " open" : "";
   els.reviewPanel.innerHTML = `
-    <div class="qa-callout ${route.status === "ride_ready" ? "pass" : ""}">
+    <div class="qa-callout ${routeGateStatus(route) === "confirmed" ? "pass" : ""}">
       <strong>Evidence summary</strong>
       <span>${escapeHtml(rideReadyClearanceTitle(route))} | ${escapeHtml(gateCountLabel(route))} | ${escapeHtml(browseConcernLabel(route))}</span>
     </div>
@@ -1369,7 +1390,7 @@ function renderReviewPanel() {
 
 function shouldOpenEvidenceDetails() {
   return ["near", "candidate", "blocked"].includes(state.readinessFilter)
-    || ["planning_grade", "ride_ready"].includes(state.statusFilter);
+    || ["concept", "plan_ready"].includes(state.statusFilter);
 }
 
 function targetWindowCallout(checklist) {
@@ -1387,10 +1408,10 @@ function targetWindowCallout(checklist) {
 function readinessScoreCallout(route) {
   const score = route.readinessScore || {};
   const value = score.score ?? 0;
-  const blocked = (score.blockerCount || 0) > 0 || route.status !== "ride_ready";
+  const blocked = (score.blockerCount || 0) > 0 || routeGateStatus(route) !== "confirmed";
   return `<div class="qa-callout ${blocked ? "fail" : value >= 70 ? "pass" : ""}">
     <strong>${escapeHtml(rideReadyClearanceTitle(route))}</strong>
-    <span>${score.blockerCount || 0} blockers | ${score.requiredActionCount || 0} required gates | ${score.passGateCount || 0}/${score.gateCount || 6} ride-ready gates pass | clearance ${value}/100, not route quality</span>
+    <span>${score.blockerCount || 0} blockers | ${score.requiredActionCount || 0} required gates | ${score.passGateCount || 0}/${score.gateCount || 6} operational gates pass | gate score ${value}/100, not route quality</span>
   </div>`;
 }
 
@@ -1405,7 +1426,7 @@ function promotionChecklistBlock(checklist) {
     ["Map artifacts", checklist.mapArtifacts],
     ["Decision", checklist.finalDecision],
   ];
-  return `<strong>Ride-ready promotion gates</strong><div class="check-grid">${items.map(([label, value, note]) => checkItem(label, value, note)).join("")}</div>`;
+  return `<strong>Operational gate checks</strong><div class="check-grid">${items.map(([label, value, note]) => checkItem(label, value, note)).join("")}</div>`;
 }
 
 function promotionActionsBlock(actions = []) {
@@ -1837,7 +1858,8 @@ function routeToGeojson(route) {
       distance_mi: day.distanceMi,
       gain_ft: day.gainFt,
       source_quality: route.sourceQuality,
-      status: route.status,
+      maturity: routeMaturity(route),
+      gate_status: routeGateStatus(route),
       surface_mix: route.surfaceMix,
       best_season: route.bestSeason,
       resource_water: route.resources?.water,
@@ -1927,7 +1949,7 @@ async function saveEditRequest(event) {
 async function copyEditPrompt() {
   const text = els.editText.value.trim();
   const route = selectedRoute();
-  const prompt = `Route edit request for bikepacking_planner.\nTrip: ${state.trip.id}\nRoute: ${route?.name || "All Route Options"}\nCurrent status: ${route?.status || "mixed"}\nRequest: ${text}\nPreserve source-quality labels, route shape labels, status labels, terrain/topographic basemap QA, resources, difficulty dimensions, GPX/GeoJSON exports, variants, elevation comparisons, and local-cache reuse.`;
+  const prompt = `Route edit request for bikepacking_planner.\nTrip: ${state.trip.id}\nRoute: ${route?.name || "All Route Options"}\nCurrent maturity: ${route ? labelMaturity(routeMaturity(route)) : "mixed"}\nCurrent gate status: ${route ? labelGateStatus(routeGateStatus(route)) : "mixed"}\nRequest: ${text}\nPreserve source-quality labels, route shape labels, maturity, gate status, terrain/topographic basemap QA, resources, difficulty dimensions, GPX/GeoJSON exports, variants, elevation comparisons, and local-cache reuse.`;
   try {
     await navigator.clipboard.writeText(prompt);
     els.editStatus.textContent = "prompt copied";
@@ -1945,16 +1967,47 @@ function labelQuality(value) {
   }[value] || value || "Unknown";
 }
 
-function labelStatus(value) {
+function routeMaturity(route) {
+  return route?.maturity || route?.status || "candidate";
+}
+
+function routeGateStatus(route) {
+  if (route?.gateStatus) return route.gateStatus;
+  if (route?.status === "ride_ready") return "confirmed";
+  const blockers = route?.readinessScore?.blockerCount || 0;
+  return blockers ? "blocked" : "partial";
+}
+
+function labelMaturity(value) {
   return {
-    idea: "Idea",
-    planning_grade: "Planning-grade",
-    ride_ready: "Ride-ready",
-  }[value] || "Idea";
+    candidate: "Candidate",
+    concept: "Concept",
+    plan_ready: "Plan Ready",
+    idea: "Candidate",
+    planning_grade: "Plan Ready",
+    ride_ready: "Plan Ready",
+  }[value] || "Candidate";
+}
+
+function labelGateStatus(value) {
+  return {
+    blocked: "Gate Blocked",
+    partial: "Gate Partial",
+    confirmed: "Gate Confirmed",
+  }[value] || "Gate Partial";
 }
 
 function labelDecision(value) {
-  return String(value || "candidate").replace(/_/g, " ");
+  return {
+    candidate: "candidate",
+    top_candidate: "strong candidate",
+    close_candidate: "close candidate",
+    near_ride_ready: "near gate-confirmed",
+    ride_ready_with_final_refresh: "gate-confirmed with final refresh",
+    reject_rework: "blocked / rework",
+    segment_only: "segment only",
+    rework: "rework",
+  }[value] || String(value || "candidate").replace(/_/g, " ");
 }
 
 function labelReadiness(route) {
@@ -1968,23 +2021,23 @@ function labelTargetWindow(route) {
 }
 
 function rideReadyClearanceTitle(route) {
-  if (route.status === "ride_ready") return "Ride-ready clearance: current";
+  if (routeGateStatus(route) === "confirmed") return "Gate status: confirmed";
   const blockers = route.readinessScore?.blockerCount || 0;
-  if (blockers) return "Ride-ready clearance: blocked";
-  return "Planning grade: unresolved gates";
+  if (blockers) return "Gate status: blocked";
+  return "Gate status: partial";
 }
 
 function rideReadyClearanceLabel(route) {
-  if (route.status === "ride_ready") return "clearance: current";
+  if (routeGateStatus(route) === "confirmed") return "gates confirmed";
   const blockers = route.readinessScore?.blockerCount || 0;
-  if (blockers) return "clearance blocked";
+  if (blockers) return "gates blocked";
   const required = route.readinessScore?.requiredActionCount || 0;
-  if (required) return "clearance pending";
-  return "planning-grade gates";
+  if (required) return "gates partial";
+  return "gates partial";
 }
 
 function rideReadyClearanceClass(route) {
-  if (route.status === "ride_ready") return "clearance_good";
+  if (routeGateStatus(route) === "confirmed") return "clearance_good";
   const blockers = route.readinessScore?.blockerCount || 0;
   if (blockers) return "clearance_blocked";
   return "clearance_pending";
@@ -2000,7 +2053,7 @@ function targetWindowClass(route) {
 function readinessClass(route) {
   const decision = route.promotionChecklist?.finalDecision || "";
   const windowFit = route.promotionChecklist?.targetWindowFit || "";
-  if (route.status === "ride_ready" || decision === "ride_ready_with_final_refresh") return "readiness_good";
+  if (routeGateStatus(route) === "confirmed" || decision === "ride_ready_with_final_refresh") return "readiness_good";
   if (windowFit === "blocker" || ["reject_rework", "segment_only", "rework"].includes(decision)) return "readiness_blocked";
   return "readiness_candidate";
 }
@@ -2014,7 +2067,7 @@ function mainBlockerLabel(route) {
   const blocker = (route.promotionActions || []).find((action) => action.priority === "blocker");
   if (blocker?.category) return `blocker: ${blocker.category}`;
   const decision = route.promotionChecklist?.finalDecision || "";
-  if (route.status === "ride_ready" || decision === "ride_ready_with_final_refresh") return "ready with refresh";
+  if (routeGateStatus(route) === "confirmed" || decision === "ride_ready_with_final_refresh") return "gates confirmed";
   const windowFit = route.promotionChecklist?.targetWindowFit || "";
   if (windowFit === "needs_refresh") return "needs date refresh";
   if (windowFit === "blocker") return "date/window blocker";
@@ -2023,8 +2076,8 @@ function mainBlockerLabel(route) {
 
 function topGate(route) {
   return biggestGates(route, 1)[0] || {
-    label: route.status === "ride_ready" ? "ride-ready" : "planning check TBD",
-    severity: route.status === "ride_ready" ? "pass" : "needs",
+    label: routeGateStatus(route) === "confirmed" ? "gate confirmed" : "planning check TBD",
+    severity: routeGateStatus(route) === "confirmed" ? "pass" : "needs",
   };
 }
 
@@ -2033,7 +2086,7 @@ function topGateLabel(route) {
 }
 
 function browseConcernLabel(route) {
-  if (route.status === "ride_ready") return "Ready with final refresh";
+  if (routeGateStatus(route) === "confirmed") return "Gate confirmed";
   const label = topGateLabel(route);
   return {
     "camp/permit unresolved": "Needs camp check",
@@ -2051,7 +2104,7 @@ function browseConcernLabel(route) {
 function gateCountLabel(route) {
   const blockers = route.readinessScore?.blockerCount || 0;
   const required = route.readinessScore?.requiredActionCount || 0;
-  if (route.status === "ride_ready" && !blockers && !required) return "0 open gates";
+  if (routeGateStatus(route) === "confirmed" && !blockers && !required) return "0 open gates";
   if (blockers) return `${blockers} blocker${blockers === 1 ? "" : "s"}`;
   if (required) return `${required} required gate${required === 1 ? "" : "s"}`;
   const gates = biggestGates(route, 6).length;
@@ -2060,7 +2113,7 @@ function gateCountLabel(route) {
 
 function gateCountClass(route) {
   const blockers = route.readinessScore?.blockerCount || 0;
-  if (route.status === "ride_ready" && !blockers) return "readiness_good";
+  if (routeGateStatus(route) === "confirmed" && !blockers) return "readiness_good";
   if (blockers) return "readiness_blocked";
   return "readiness_candidate";
 }
@@ -2074,7 +2127,7 @@ function gateChipClass(gate) {
 function gateChipsHtml(route, limit = 5) {
   const gates = biggestGates(route, limit);
   if (!gates.length) {
-    return `<span class="gate-chip pass">ride-ready</span>`;
+    return `<span class="gate-chip pass">gate confirmed</span>`;
   }
   return gates.map((gate) => `<span class="gate-chip ${escapeHtml(gate.severity)}" title="${escapeHtml(gate.detail || gate.label)}">${escapeHtml(gate.label)}</span>`).join("");
 }

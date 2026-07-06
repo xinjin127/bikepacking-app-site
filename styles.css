@@ -501,9 +501,15 @@ textarea {
 .pill.routed_approximation { color: #7b5520; }
 .pill.concept { color: #8d3d2d; }
 .pill.verified_variant { color: #23624a; }
-.pill.idea, .status-chip.idea { color: #8d3d2d; border-color: rgba(185, 77, 53, 0.34); }
-.pill.planning_grade, .status-chip.planning_grade { color: #7b5520; border-color: rgba(196, 139, 44, 0.44); }
-.pill.ride_ready, .status-chip.ride_ready { color: #23624a; border-color: rgba(47, 123, 88, 0.44); }
+.pill.idea, .status-chip.idea,
+.pill.candidate, .status-chip.candidate,
+.pill.blocked, .status-chip.blocked { color: #8d3d2d; border-color: rgba(185, 77, 53, 0.34); }
+.pill.planning_grade, .status-chip.planning_grade,
+.pill.concept, .status-chip.concept,
+.pill.plan_ready, .status-chip.plan_ready,
+.pill.partial, .status-chip.partial { color: #7b5520; border-color: rgba(196, 139, 44, 0.44); }
+.pill.ride_ready, .status-chip.ride_ready,
+.pill.confirmed, .status-chip.confirmed { color: #23624a; border-color: rgba(47, 123, 88, 0.44); }
 .pill.readiness_good { color: #23624a; border-color: rgba(47, 123, 88, 0.44); background: rgba(236, 246, 239, 0.78); }
 .pill.readiness_candidate { color: #7b5520; border-color: rgba(196, 139, 44, 0.44); background: rgba(249, 241, 222, 0.82); }
 .pill.readiness_blocked { color: #8d3d2d; border-color: rgba(185, 77, 53, 0.34); background: rgba(250, 232, 225, 0.78); }
