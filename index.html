@@ -132,6 +132,8 @@
             <span id="mapQa"></span>
           </div>
           <div class="export-actions">
+            <button type="button" id="downloadGeojson">GeoJSON</button>
+            <button type="button" id="downloadGpx">GPX</button>
             <a id="exportRoutePackage" href="" download hidden aria-disabled="true">Preparing export...</a>
           </div>
         </div>
@@ -140,6 +142,11 @@
           <svg id="dispersedSvg" class="dispersed-svg" role="img" aria-label="Candidate dispersed camping public land"></svg>
           <svg id="routeSvg" class="route-svg" role="img" aria-label="Route geometry"></svg>
           <svg id="campsiteSvg" class="campsite-svg" role="img" aria-label="Campsite locations"></svg>
+          <div class="map-controls" aria-label="Map controls">
+            <button type="button" id="zoomIn" aria-label="Zoom in">+</button>
+            <button type="button" id="zoomOut" aria-label="Zoom out">-</button>
+            <button type="button" id="fitMap" aria-label="Fit selected routes">Fit</button>
+          </div>
           <div class="map-layer-controls" aria-label="Map layers">
             <label class="basemap-control">
               <span>Map</span>
