@@ -1779,7 +1779,10 @@ function renderDetails() {
     intro.innerHTML = `<strong>Select a route to inspect days, camps, resources, variants, and evidence.</strong><p class="route-note">The library starts date- and region-agnostic. Add dates, region, length, or style filters when you want to check which options are plausible for a specific trip.</p>`;
     const cards = filteredRoutes().slice(0, 18).map((item) => {
       const card = document.createElement("div");
-      card.className = "overview-card";
+      card.className = "overview-card route-choice-card";
+      card.tabIndex = 0;
+      card.setAttribute("role", "button");
+      card.setAttribute("aria-label", `Open ${item.name}`);
       card.innerHTML = `
         <strong>${escapeHtml(item.name)}</strong>
         <div class="day-meta">${escapeHtml(item.region || labelGroup(item.group))} &middot; ${item.distanceMi || 0} mi &middot; ${(item.gainFt || 0).toLocaleString()} ft &middot; ${item.days.length} days &middot; ${escapeHtml(item.shape || "route")}</div>
@@ -1792,6 +1795,15 @@ function renderDetails() {
         </span>
         <p class="route-note">${escapeHtml(item.description || item.sourceNote || "")}</p>
         ${sourceLinkHtml(item)}`;
+      card.addEventListener("click", (event) => {
+        if (event.target.closest("a")) return;
+        selectRoute(item);
+      });
+      card.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        selectRoute(item);
+      });
       return card;
     });
     els.dayFlow.replaceChildren(intro, ...cards);

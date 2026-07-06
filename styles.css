@@ -491,6 +491,17 @@ textarea {
   outline-offset: 2px;
 }
 
+.route-choice-card {
+  cursor: pointer;
+}
+
+.route-choice-card:hover,
+.route-choice-card:focus-visible {
+  border-color: rgba(47, 123, 88, 0.55);
+  box-shadow: 0 10px 24px rgba(31, 45, 41, 0.08);
+  outline: none;
+}
+
 .route-swatch {
   width: 9px;
   border-radius: 7px;
