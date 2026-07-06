@@ -4,14 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Bikepacking Route Library</title>
-  <link rel="stylesheet" href="styles.css?v=20260705-real-sources-1">
+  <link rel="stylesheet" href="styles.css?v=20260705-map-controls-top-1">
 </head>
 <body>
   <main class="app-shell">
     <header class="topbar">
       <div>
         <h1>Bikepacking Route Library</h1>
-        <p id="tripDescription">Browse route candidates, then choose dates, region, and trip style to see which operational gates need checking.</p>
+        <p id="tripDescription">Browse route candidates, then choose dates, region, and trip style to see what work remains before ride-ready.</p>
       </div>
       <div class="trip-picker">
         <label for="tripSelect">Trip</label>
@@ -87,7 +87,7 @@
           <select id="readinessFilter">
             <option value="all">All readiness</option>
             <option value="best">Best candidates</option>
-            <option value="near">Near gate-confirmed</option>
+            <option value="near">Close to ride-ready</option>
             <option value="candidate">Needs refresh</option>
             <option value="blocked">Blocked / rework</option>
           </select>
@@ -134,14 +134,28 @@
         </div>
         <div class="map" id="map" aria-label="Route map">
           <div class="tile-layer" id="tileLayer"></div>
+          <svg id="dispersedSvg" class="dispersed-svg" role="img" aria-label="Candidate dispersed camping public land"></svg>
           <svg id="routeSvg" class="route-svg" role="img" aria-label="Route geometry"></svg>
+          <svg id="campsiteSvg" class="campsite-svg" role="img" aria-label="Campsite locations"></svg>
           <div class="map-controls" aria-label="Map controls">
-            <button type="button" id="zoomIn" aria-label="Zoom in">+</button>
-            <button type="button" id="zoomOut" aria-label="Zoom out">-</button>
             <button type="button" id="fitMap" aria-label="Fit selected routes">Fit</button>
           </div>
+          <div class="map-layer-controls" aria-label="Map layers">
+            <label class="basemap-control">
+              <span>Map</span>
+              <select id="basemapSelect" aria-label="Basemap">
+                <option value="fast">Flat / No Topo</option>
+                <option value="topo">Topo</option>
+              </select>
+            </label>
+            <label class="map-layer-toggle" title="Show candidate dispersed public land overlay">
+              <input type="checkbox" id="dispersedLayerToggle">
+              <span>Land</span>
+            </label>
+          </div>
           <div class="map-legend" id="mapLegend"></div>
-          <div class="map-hint" id="mapHint">Terrain tiles load from OpenTopoMap when available; routes and exports are local.</div>
+          <div class="campsite-popup" id="campsitePopup" hidden></div>
+          <div class="map-hint" id="mapHint">Flat / No Topo loads first; switch to Topo for terrain context. Routes, campsites, and exports are local.</div>
         </div>
       </section>
     </section>
@@ -168,7 +182,7 @@
       <section class="detail-panel">
         <div class="panel-heading">
           <h2>Vetting & Evidence</h2>
-          <span id="reviewMeta">quality gates</span>
+          <span id="reviewMeta">ride-ready work</span>
         </div>
         <div id="reviewPanel" class="review-panel"></div>
       </section>
@@ -209,6 +223,6 @@
 
     <section class="source-notes" id="sourceNotes"></section>
   </main>
-  <script src="app.js?v=20260705-split-data-1"></script>
+  <script src="app.js?v=20260705-map-controls-top-1"></script>
 </body>
 </html>

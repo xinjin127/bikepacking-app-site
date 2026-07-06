@@ -16,6 +16,18 @@ const state = {
   routeSearch: "",
   selectedRouteId: "__all",
   highlightedRouteId: null,
+  campsites: [],
+  campsitesLoaded: false,
+  campsitesVisible: true,
+  selectedCampsiteId: null,
+  dispersedAreas: [],
+  dispersedAreasVisible: true,
+  dispersedAreasLoading: false,
+  dispersedAreasError: "",
+  dispersedAreasNotice: "",
+  dispersedAreasCache: new Map(),
+  dispersedAreasRequestKey: "",
+  basemap: "fast",
   activeVariants: new Set(),
   routeDetailPromises: new Map(),
   map: {
@@ -69,7 +81,31 @@ const MAX_LOCAL_STORAGE_CACHE_BYTES = 1_500_000;
 const OVERVIEW_ROUTE_POINTS = 260;
 const OVERVIEW_HIGHLIGHT_POINTS = 1000;
 const DETAIL_ROUTE_POINTS = 6000;
-const DATA_VERSION = "20260705-split-data-1";
+const DATA_VERSION = "20260705-map-controls-top-1";
+const CAMPSITE_DATA_PATH = "california_route_stay_inventory.geojson";
+const BLM_CA_SMA_QUERY_URL = "https://gis.blm.gov/caarcgis/rest/services/lands/BLM_CA_LandStatus_SurfaceManagementAgency/FeatureServer/0/query";
+const DISPERSED_AREA_STYLES = {
+  2: { color: "#6f5aa8", label: "BLM candidate land", manager: "BLM" },
+  915: { color: "#2f7b58", label: "USFS candidate land", manager: "USFS" },
+};
+const CAMPSITE_CATEGORY_STYLES = {
+  hike_bike_site: { color: "#007c91", label: "Hike/bike" },
+  public_bookable_or_permit_campsite: { color: "#2f7b58", label: "Public/bookable" },
+  private_campsite_or_lodging: { color: "#8a5a00", label: "Private/lodging" },
+  dispersed_allowed_region: { color: "#6f5aa8", label: "Dispersed region" },
+};
+const TILE_PROVIDERS = {
+  fast: {
+    name: "Flat / No Topo",
+    subdomains: ["a", "b", "c", "d"],
+    url: (subdomain, key) => `https://${subdomain}.basemaps.cartocdn.com/rastertiles/voyager/${key}.png`,
+  },
+  topo: {
+    name: "Topo",
+    subdomains: ["a", "b", "c"],
+    url: (subdomain, key) => `https://${subdomain}.tile.opentopomap.org/${key}.png`,
+  },
+};
 
 const els = {
   tripSelect: document.querySelector("#tripSelect"),
@@ -98,9 +134,14 @@ const els = {
   map: document.querySelector("#map"),
   tileLayer: document.querySelector("#tileLayer"),
   routeSvg: document.querySelector("#routeSvg"),
+  dispersedSvg: document.querySelector("#dispersedSvg"),
+  campsiteSvg: document.querySelector("#campsiteSvg"),
   zoomIn: document.querySelector("#zoomIn"),
   zoomOut: document.querySelector("#zoomOut"),
   fitMap: document.querySelector("#fitMap"),
+  basemapSelect: document.querySelector("#basemapSelect"),
+  dispersedLayerToggle: document.querySelector("#dispersedLayerToggle"),
+  campsitePopup: document.querySelector("#campsitePopup"),
   mapLegend: document.querySelector("#mapLegend"),
   dayFlow: document.querySelector("#dayFlow"),
   detailTitle: document.querySelector("#detailTitle"),
@@ -123,6 +164,11 @@ const els = {
 
 async function init() {
   hideLoadError();
+  state.basemap = localStorage.getItem("bikepacking_planner:basemap") in TILE_PROVIDERS
+    ? localStorage.getItem("bikepacking_planner:basemap")
+    : "fast";
+  if (els.basemapSelect) els.basemapSelect.value = state.basemap;
+  if (els.dispersedLayerToggle) els.dispersedLayerToggle.checked = state.dispersedAreasVisible;
   state.trips = await fetchJson("/api/trips");
   if (!state.trips.length) {
     els.tripDescription.textContent = "No imported trips found. Run python -m bikepacking_planner import-existing.";
@@ -184,11 +230,11 @@ async function init() {
 }
 
 function setupMapInteractions() {
-  els.zoomIn.addEventListener("click", () => {
+  els.zoomIn?.addEventListener("click", () => {
     stopPanInertia();
     zoomBy(0.5);
   });
-  els.zoomOut.addEventListener("click", () => {
+  els.zoomOut?.addEventListener("click", () => {
     stopPanInertia();
     zoomBy(-0.5);
   });
@@ -197,10 +243,26 @@ function setupMapInteractions() {
     fitToRoutes(selectedRoute() ? [selectedRoute()] : filteredRoutes());
     drawMap();
   });
+  els.basemapSelect.addEventListener("change", () => {
+    state.basemap = els.basemapSelect.value in TILE_PROVIDERS ? els.basemapSelect.value : "fast";
+    localStorage.setItem("bikepacking_planner:basemap", state.basemap);
+    state.map.tileNodes.clear();
+    stopPanInertia();
+    commitMapPreview();
+    drawMap();
+  });
+  els.dispersedLayerToggle?.addEventListener("change", () => {
+    state.dispersedAreasVisible = Boolean(els.dispersedLayerToggle.checked);
+    state.dispersedAreasError = "";
+    state.dispersedAreasNotice = "";
+    drawMap();
+  });
   els.map.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return;
-    if (event.target.closest(".map-controls, .map-legend, .map-hint")) return;
+    if (event.target.closest(".map-controls, .map-layer-controls, .map-legend, .map-hint, .campsite-popup")) return;
+    if (event.target.closest(".campsite-marker")) return;
     if (event.target.closest(".route-line")) return;
+    state.selectedCampsiteId = null;
     stopPanInertia();
     commitMapPreview();
     state.map.dragging = true;
@@ -280,10 +342,11 @@ async function loadTrip(tripId) {
   state.selectedRouteId = "__all";
   state.highlightedRouteId = null;
   state.activeVariants.clear();
-  els.tripDescription.textContent = "Browse route candidates, then choose dates, region, and trip style to see which operational gates need checking.";
+  els.tripDescription.textContent = "Browse route candidates, then choose dates, region, and trip style to see what work remains before ride-ready.";
   renderRegionOptions();
   renderStyleFilters();
   renderGroupTabs();
+  await loadCampsites();
   fitToRoutes(filteredRoutes());
   drawAll();
 }
@@ -350,6 +413,53 @@ async function fetchJson(url) {
   const cached = recallJson(url);
   if (cached) return cached;
   throw new Error(`Could not load route data. Tried ${errors.join(" | ")}`);
+}
+
+async function loadCampsites() {
+  if (state.campsitesLoaded) return;
+  const candidates = [
+    `data/campsites/${CAMPSITE_DATA_PATH}`,
+    `../data/campsites/${CAMPSITE_DATA_PATH}`,
+    `../../research/campsites/${CAMPSITE_DATA_PATH}`,
+  ];
+  const errors = [];
+  for (const candidate of candidates) {
+    try {
+      const payload = await fetchJsonWithRetry(`${candidate}?v=${DATA_VERSION}`, 1);
+      state.campsites = normalizeCampsites(payload);
+      state.campsitesLoaded = true;
+      return;
+    } catch (error) {
+      errors.push(`${candidate}: ${error.message}`);
+    }
+  }
+  state.campsites = [];
+  state.campsitesLoaded = false;
+  console.warn(`Could not load campsite data. Tried ${errors.join(" | ")}`);
+}
+
+function normalizeCampsites(payload) {
+  const features = payload?.features || [];
+  return features.map((feature, index) => {
+    const properties = feature.properties || {};
+    const coordinates = feature.geometry?.coordinates || [];
+    return {
+      ...properties,
+      id: campsiteId(properties, coordinates, index),
+      longitude: coordinates[0],
+      latitude: coordinates[1],
+    };
+  }).filter((site) => Number.isFinite(site.longitude) && Number.isFinite(site.latitude));
+}
+
+function campsiteId(properties, coordinates, index) {
+  return [
+    properties.routeId || "route",
+    properties.siteName || "site",
+    coordinates[0],
+    coordinates[1],
+    index,
+  ].join("|");
 }
 
 async function fetchJsonWithRetry(url, attempts = 2) {
@@ -552,9 +662,9 @@ function renderLibraryStats() {
     statChip(`${maturityCounts.plan_ready || 0} plan ready`, "plan_ready"),
     statChip(`${maturityCounts.concept || 0} concepts`, "concept"),
     statChip(`${maturityCounts.candidate || 0} candidates`, "candidate"),
-    statChip(`${gateCounts.confirmed || 0} gate confirmed`, "confirmed"),
-    statChip(`${summary.gateBlockedCount || 0} blocked`, "blocked"),
-    statChip(`${summary.gatePartialCount || 0} partial`, "partial"),
+    statChip(`${gateCounts.confirmed || 0} ride-ready`, "confirmed"),
+    statChip(`${summary.gateBlockedCount || 0} need work`, "blocked"),
+    statChip(`${summary.gatePartialCount || 0} need review`, "partial"),
   ];
   if (isCaliforniaContext()) {
     const californiaRoutes = matchingRoutes.filter(isCaliforniaPriority);
@@ -599,9 +709,9 @@ function renderReadinessDashboard() {
   els.readinessDashboard.innerHTML = `
     <span><strong>${summary.routeCount || 0}</strong> ${snapshotLabel} matches</span>
     <span><strong>${summary.planReadyCount || 0}</strong> plan ready</span>
-    <span><strong>${summary.gateConfirmedCount || 0}</strong> gate confirmed</span>
-    <span><strong>${summary.gateBlockedCount || 0}</strong> gate blocked</span>
-    <span>top gate: <strong>${escapeHtml(topBlocker)}</strong></span>`;
+    <span><strong>${summary.gateConfirmedCount || 0}</strong> ride-ready</span>
+    <span><strong>${summary.gateBlockedCount || 0}</strong> need work</span>
+    <span>top work: <strong>${escapeHtml(topBlocker)}</strong></span>`;
 }
 
 function filteredReadinessSummary(routes) {
@@ -632,7 +742,7 @@ function filteredReadinessSummary(routes) {
     }
     for (const action of route.promotionActions || []) {
       if (action.priority !== "blocker") continue;
-      const category = action.category || "Blocker";
+      const category = compactGateLabel(action.category || "Work item", action.action || "");
       blockerCounts[category] = (blockerCounts[category] || 0) + 1;
     }
   }
@@ -1004,17 +1114,15 @@ function renderRouteList() {
         <span class="route-name">${escapeHtml(route.name)}</span>
         <span class="route-meta">${escapeHtml(route.region || labelGroup(route.group))} &middot; ${route.distanceMi || 0} mi &middot; ${(route.gainFt || 0).toLocaleString()} ft &middot; ${route.days.length} days &middot; ${escapeHtml(route.shape || "route")}</span>
         <span class="pill-row primary-pills">
-          <span class="pill ${routeMaturity(route)}">${labelMaturity(routeMaturity(route))}</span>
-          <span class="pill ${routeGateStatus(route)}">${labelGateStatus(routeGateStatus(route))}</span>
-          <span class="pill ${rideReadyClearanceClass(route)}">${rideReadyClearanceLabel(route)}</span>
-          <span class="pill ${gateChipClass(topGate(route))}">${browseConcernLabel(route)}</span>
-          ${route.difficulty ? `<span class="pill">${escapeHtml(route.difficulty)}</span>` : ""}
+          <span class="pill ${routeMaturityClass(route)}">${routeMaturityLabel(route)}</span>
+          <span class="pill ${rideReadyStatusClass(route)}">${rideReadyStatusLabel(route)}</span>
+          <span class="pill ${gateChipClass(topGate(route))}">Work required: ${escapeHtml(topGateLabel(route))}</span>
+          ${routeDifficultyChip(route)}
         </span>
         <span class="pill-row secondary-pills">
-          <span class="pill">surface: ${escapeHtml(route.gravelLevel || "unknown")}</span>
           <span class="pill ${route.sourceQuality}">${labelQuality(route.sourceQuality)}</span>
-          ${route.bestSeason ? `<span class="pill">season: ${escapeHtml(route.bestSeason)}</span>` : ""}
-          <span class="pill ${gateCountClass(route)}">${gateCountLabel(route)}</span>
+          <span class="pill">${surfaceLabel(route)}</span>
+          <span class="pill ${gateCountClass(route)}">${gateSummaryLabel(route)}</span>
         </span>
         ${sourceLinkHtml(route, { compact: true })}
       </span>`;
@@ -1111,6 +1219,8 @@ function drawMap() {
   if (!rect.width || !rect.height) return;
   drawTiles(rect);
   els.routeSvg.setAttribute("viewBox", `0 0 ${rect.width} ${rect.height}`);
+  els.dispersedSvg.setAttribute("viewBox", `0 0 ${rect.width} ${rect.height}`);
+  els.campsiteSvg.setAttribute("viewBox", `0 0 ${rect.width} ${rect.height}`);
   const routeFragment = document.createDocumentFragment();
   const projection = projectionContext(rect);
   const route = selectedRoute();
@@ -1121,9 +1231,9 @@ function drawMap() {
     ? `${route.distanceMi || 0} mi | ${(route.gainFt || 0).toLocaleString()} ft | ${route.days.length} days | ${labelMaturity(routeMaturity(route))} | ${labelGateStatus(routeGateStatus(route))}`
     : routes.length ? "Browse all visible routes, then select one for days, resources, variants, and evidence." : "Clear search or loosen filters to restore the map.";
   els.mapQa.textContent = route
-    ? `Operational gates: ${gateCountLabel(route)} | ${topGateLabel(route)} | ${rideReadyClearanceLabel(route)}`
-    : planningContextActive() ? "Planning context active: final route-specific checks are still required before departure." : "Date-agnostic browse mode: select a route to inspect maturity, gates, and evidence.";
-  renderMapLegend(routes);
+    ? `Ride-ready work: ${gateCountLabel(route)} | ${topGateLabel(route)} | ${rideReadyClearanceLabel(route)}`
+    : planningContextActive() ? "Planning context active: final route-specific checks are still required before departure." : "Date-agnostic browse mode: select a route to inspect planning status, ride-ready work, and evidence.";
+  renderDispersedAreas(projection);
 
   const drawRoutes = state.highlightedRouteId
     ? [
@@ -1180,8 +1290,156 @@ function drawMap() {
     appendWaypoints(route.waypoints || [], routeFragment, projection);
   }
   els.routeSvg.replaceChildren(routeFragment);
+  renderCampsites(routes, projection);
+  renderMapLegend(routes);
   state.map.renderedZoom = state.map.zoom;
   state.map.renderedCenter = [...state.map.center];
+}
+
+function renderDispersedAreas(projection) {
+  els.map.classList.toggle("dispersed-hidden", !state.dispersedAreasVisible);
+  if (!state.dispersedAreasVisible) {
+    els.dispersedSvg.replaceChildren();
+    return;
+  }
+  queueDispersedAreaLoad(projection);
+  const fragment = document.createDocumentFragment();
+  for (const area of state.dispersedAreas) {
+    const pathData = dispersedAreaPath(area.geometry, projection);
+    if (!pathData) continue;
+    const style = dispersedAreaStyle(area.properties?.SMA_ID);
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", pathData);
+    path.setAttribute("class", `dispersed-area ${escapeSvgClass(style.manager.toLowerCase())}`);
+    path.setAttribute("fill", style.color);
+    path.setAttribute("stroke", style.color);
+    const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+    title.textContent = `${style.label}: public-land planning layer; verify local closures, fire restrictions, road access, and posted rules.`;
+    path.appendChild(title);
+    fragment.appendChild(path);
+  }
+  els.dispersedSvg.replaceChildren(fragment);
+}
+
+function queueDispersedAreaLoad(projection) {
+  const bounds = viewportBounds(projection);
+  if (!bounds) return;
+  const spanArea = Math.abs(bounds.east - bounds.west) * Math.abs(bounds.north - bounds.south);
+  if (!selectedRoute() && (state.map.zoom < 7 || spanArea > 10)) {
+    state.dispersedAreas = [];
+    state.dispersedAreasError = "";
+    state.dispersedAreasNotice = "Zoom in or select a route";
+    state.dispersedAreasRequestKey = "";
+    return;
+  }
+  const cacheKey = dispersedAreaCacheKey(bounds, state.map.zoom);
+  if (state.dispersedAreasRequestKey === cacheKey) return;
+  if (state.dispersedAreasCache.has(cacheKey)) {
+    state.dispersedAreas = state.dispersedAreasCache.get(cacheKey);
+    state.dispersedAreasRequestKey = cacheKey;
+    state.dispersedAreasError = "";
+    state.dispersedAreasNotice = "";
+    return;
+  }
+  if (state.dispersedAreasLoading) return;
+  state.dispersedAreasLoading = true;
+  state.dispersedAreasRequestKey = cacheKey;
+  fetchDispersedAreas(bounds)
+    .then((features) => {
+      state.dispersedAreasCache.set(cacheKey, features);
+      state.dispersedAreas = features;
+      state.dispersedAreasError = "";
+      state.dispersedAreasNotice = features.length >= 1200 ? "Candidate layer may be clipped; zoom in for complete local detail" : "";
+    })
+    .catch((error) => {
+      state.dispersedAreasError = error.message || "Could not load candidate dispersed land.";
+      state.dispersedAreasNotice = "";
+      console.warn(state.dispersedAreasError);
+    })
+    .finally(() => {
+      state.dispersedAreasLoading = false;
+      drawMap();
+    });
+}
+
+async function fetchDispersedAreas(bounds) {
+  const params = new URLSearchParams({
+    f: "geojson",
+    where: "SMA_ID IN (2,915)",
+    outFields: "OBJECTID,SMA_ID",
+    returnGeometry: "true",
+    inSR: "4326",
+    outSR: "4326",
+    geometryType: "esriGeometryEnvelope",
+    spatialRel: "esriSpatialRelIntersects",
+    geometryPrecision: "5",
+    maxAllowableOffset: "0.001",
+    resultRecordCount: "1200",
+    geometry: JSON.stringify({
+      xmin: bounds.west,
+      ymin: bounds.south,
+      xmax: bounds.east,
+      ymax: bounds.north,
+      spatialReference: { wkid: 4326 },
+    }),
+  });
+  const payload = await fetchJsonWithRetry(`${BLM_CA_SMA_QUERY_URL}?${params.toString()}`, 1);
+  return (payload.features || [])
+    .filter((feature) => feature.geometry && Object.prototype.hasOwnProperty.call(DISPERSED_AREA_STYLES, feature.properties?.SMA_ID))
+    .slice(0, 1200);
+}
+
+function viewportBounds(projection) {
+  const corners = [
+    screenToLonLat(0, 0, projection.zoom),
+    screenToLonLat(projection.rect.width, 0, projection.zoom),
+    screenToLonLat(0, projection.rect.height, projection.zoom),
+    screenToLonLat(projection.rect.width, projection.rect.height, projection.zoom),
+  ];
+  const lons = corners.map((coord) => coord[0]).filter(Number.isFinite);
+  const lats = corners.map((coord) => coord[1]).filter(Number.isFinite);
+  if (!lons.length || !lats.length) return null;
+  return {
+    west: Math.max(-125.5, Math.min(...lons)),
+    east: Math.min(-113.5, Math.max(...lons)),
+    south: Math.max(31, Math.min(...lats)),
+    north: Math.min(43, Math.max(...lats)),
+  };
+}
+
+function dispersedAreaCacheKey(bounds, zoom) {
+  const precision = zoom < 7 ? 1 : zoom < 10 ? 2 : 3;
+  return [
+    Math.floor(zoom),
+    bounds.west.toFixed(precision),
+    bounds.south.toFixed(precision),
+    bounds.east.toFixed(precision),
+    bounds.north.toFixed(precision),
+  ].join("|");
+}
+
+function dispersedAreaPath(geometry, projection) {
+  const rings = [];
+  if (geometry?.type === "Polygon") {
+    rings.push(...geometry.coordinates);
+  } else if (geometry?.type === "MultiPolygon") {
+    for (const polygon of geometry.coordinates) rings.push(...polygon);
+  }
+  const parts = [];
+  for (const ring of rings) {
+    if (!ring || ring.length < 3) continue;
+    const sampled = displayCoords(ring, state.map.zoom < 8 ? 180 : 420);
+    const commands = sampled.map((coord, index) => {
+      const [x, y] = project(coord, projection);
+      return `${index ? "L" : "M"} ${x.toFixed(1)} ${y.toFixed(1)}`;
+    });
+    if (commands.length) parts.push(`${commands.join(" ")} Z`);
+  }
+  return parts.join(" ");
+}
+
+function dispersedAreaStyle(smaId) {
+  return DISPERSED_AREA_STYLES[smaId] || { color: "#7a6f59", label: "Candidate public land", manager: "Public land" };
 }
 
 function appendPath(coords, color, options = {}, target = els.routeSvg, projection = projectionContext()) {
@@ -1238,23 +1496,192 @@ function appendWaypoints(waypoints, target = els.routeSvg, projection = projecti
   }
 }
 
-function renderMapLegend(routes) {
-  const items = [];
-  for (const route of routes.slice(0, 8)) {
-    items.push({ color: route.color || "#2f7b58", label: route.name, meta: `${labelMaturity(routeMaturity(route))} / ${labelGateStatus(routeGateStatus(route))}` });
+function renderCampsites(routes, projection) {
+  const visibleSites = visibleCampsites(routes);
+  els.map.classList.toggle("campsites-hidden", !state.campsitesVisible);
+  if (!state.campsitesVisible || !visibleSites.length) {
+    els.campsiteSvg.replaceChildren();
+    renderCampsitePopup(null, projection);
+    return;
   }
+  const fragment = document.createDocumentFragment();
+  for (const site of visibleSites) {
+    const [x, y] = project([site.longitude, site.latitude], projection);
+    if (x < -24 || y < -24 || x > projection.rect.width + 24 || y > projection.rect.height + 24) continue;
+    const marker = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    const style = campsiteStyle(site.category);
+    marker.setAttribute("class", `campsite-marker ${escapeSvgClass(site.category)} ${state.selectedCampsiteId === site.id ? "active" : ""}`);
+    marker.setAttribute("transform", `translate(${x.toFixed(1)} ${y.toFixed(1)})`);
+    marker.dataset.campsite = site.id;
+    marker.setAttribute("tabindex", "0");
+    marker.setAttribute("role", "button");
+    marker.setAttribute("aria-label", `${site.siteName}, ${style.label}`);
+    const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+    title.textContent = `${site.siteName} | ${style.label} | ${site.routeName}`;
+    const halo = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    halo.setAttribute("r", "8.5");
+    halo.setAttribute("class", "campsite-halo");
+    const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    circle.setAttribute("r", "5.4");
+    circle.setAttribute("fill", style.color);
+    const icon = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    icon.setAttribute("d", campsiteIconPath(site.category));
+    icon.setAttribute("class", "campsite-icon");
+    marker.append(title, halo, circle, icon);
+    marker.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      state.selectedCampsiteId = state.selectedCampsiteId === site.id ? null : site.id;
+      drawMap();
+    });
+    marker.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      state.selectedCampsiteId = state.selectedCampsiteId === site.id ? null : site.id;
+      drawMap();
+    });
+    fragment.appendChild(marker);
+  }
+  els.campsiteSvg.replaceChildren(fragment);
+  renderCampsitePopup(visibleSites.find((site) => site.id === state.selectedCampsiteId), projection);
+}
+
+function visibleCampsites(routes) {
+  if (!state.campsitesVisible || !state.campsites.length) return [];
+  const routeIds = new Set(routes.map((route) => route.id));
+  const sites = state.campsites.filter((site) => routeIds.has(site.routeId));
+  const selected = selectedRoute();
+  if (selected) return sites;
+  const seen = new Set();
+  return sites.filter((site) => {
+    const key = `${site.siteName}|${site.category}|${site.longitude.toFixed(5)}|${site.latitude.toFixed(5)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function renderCampsitePopup(site, projection) {
+  if (!site) {
+    els.campsitePopup.hidden = true;
+    els.campsitePopup.replaceChildren();
+    return;
+  }
+  const [x, y] = project([site.longitude, site.latitude], projection);
+  const left = clamp(x + 14, 12, Math.max(12, projection.rect.width - 310));
+  const top = clamp(y - 18, 12, Math.max(12, projection.rect.height - 210));
+  const style = campsiteStyle(site.category);
+  els.campsitePopup.style.left = `${left}px`;
+  els.campsitePopup.style.top = `${top}px`;
+  els.campsitePopup.hidden = false;
+  const campsiteLink = campsitePrimaryLink(site);
+  els.campsitePopup.innerHTML = `
+    <button type="button" class="popup-close" aria-label="Close campsite details">&times;</button>
+    <span class="campsite-popup-category" style="--site-color:${escapeHtml(style.color)}">${escapeHtml(style.label)}</span>
+    <strong>${escapeHtml(site.siteName || "Campsite")}</strong>
+    <em>${escapeHtml(site.routeName || "")}</em>
+    <p>${escapeHtml(site.notes || "Confirm current status, reservation, permit, water, fire rules, and closures before relying on this site.")}</p>
+    <a class="campsite-primary-link" href="${escapeHtml(campsiteLink.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(campsiteLink.label)}</a>`;
+  els.campsitePopup.querySelector(".popup-close")?.addEventListener("click", () => {
+    state.selectedCampsiteId = null;
+    drawMap();
+  });
+}
+
+function campsitePrimaryLink(site) {
+  const campingUrl = String(site.campingSourceUrl || "").trim();
+  const routeUrl = String(site.routeSourceUrl || "").trim();
+  const sourceName = String(site.campingSourceName || "").trim();
+  const routeSourceOnly = !campingUrl
+    || (routeUrl && normalizeUrl(campingUrl) === normalizeUrl(routeUrl))
+    || /route source|gpx waypoint/i.test(sourceName);
+  if (!routeSourceOnly) {
+    return {
+      url: campingUrl,
+      label: sourceName ? `Open ${sourceName}` : "Open campsite source",
+    };
+  }
+  return {
+    url: campsiteMapSearchUrl(site),
+    label: "Open campsite location",
+  };
+}
+
+function campsiteMapSearchUrl(site) {
+  const name = site.siteName ? `${site.siteName} ` : "";
+  const query = `${name}${site.latitude},${site.longitude}`;
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
+}
+
+function normalizeUrl(value = "") {
+  try {
+    const url = new URL(value);
+    url.hash = "";
+    url.searchParams.sort();
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return String(value || "").trim().replace(/\/$/, "");
+  }
+}
+
+function campsiteStyle(category) {
+  return CAMPSITE_CATEGORY_STYLES[category] || { color: "#596862", label: "Campsite" };
+}
+
+function campsiteIconPath(category) {
+  if (category === "private_campsite_or_lodging") return "M -3 3 L -3 -2 L 0 -4 L 3 -2 L 3 3 Z";
+  if (category === "dispersed_allowed_region") return "M 0 -4 L 4 3 L -4 3 Z";
+  if (category === "hike_bike_site") return "M -4 2 L -1 -4 L 1 -4 L 4 2 Z M -1 2 L 0 -1 L 1 2";
+  return "M -4 3 L 0 -4 L 4 3 Z M -2 3 L 0 -1 L 2 3";
+}
+
+function escapeSvgClass(value = "") {
+  return String(value).replace(/[^a-z0-9_-]/gi, "-");
+}
+
+function renderMapLegend(routes) {
   const route = selectedRoute();
+  const items = [];
   if (route) {
-    for (const variant of route.variants || []) {
-      if (state.activeVariants.has(variant.id)) {
-        items.push({ color: variant.color || "#8b6f47", label: variant.name, meta: variant.type || "variant", dashed: true });
-      }
+    for (const item of routes.slice(0, 8)) {
+      items.push({ color: item.color || "#2f7b58", label: item.name, meta: `${labelMaturity(routeMaturity(item))} / ${labelGateStatus(routeGateStatus(item))}` });
+    }
+  } else if (routes.length) {
+    items.push({ color: "#7a6f59", label: `${routes.length} visible routes`, meta: "browse" });
+  }
+  for (const variant of route?.variants || []) {
+    if (state.activeVariants.has(variant.id)) {
+      items.push({ color: variant.color || "#8b6f47", label: variant.name, meta: variant.type || "variant", dashed: true });
     }
   }
+  if (state.dispersedAreasVisible) {
+    if (route) {
+      items.push({ color: DISPERSED_AREA_STYLES[2].color, label: DISPERSED_AREA_STYLES[2].label, meta: "candidate", area: true });
+      items.push({ color: DISPERSED_AREA_STYLES[915].color, label: DISPERSED_AREA_STYLES[915].label, meta: "verify", area: true });
+    } else {
+      items.push({ color: DISPERSED_AREA_STYLES[915].color, label: "Public land overlay", meta: "on", area: true });
+    }
+    if (state.dispersedAreasNotice) items.push({ color: "#7a6f59", label: state.dispersedAreasNotice, meta: "detail", dashed: true });
+    if (state.dispersedAreasLoading) items.push({ color: "#7a6f59", label: "Loading candidate land", meta: "live GIS", dashed: true });
+    if (state.dispersedAreasError) items.push({ color: "#9b4637", label: "Candidate land unavailable", meta: "source", dashed: true });
+  }
+  if (state.campsitesVisible) {
+    const categories = [...new Set(visibleCampsites(routes).map((site) => site.category))];
+    if (route) {
+      for (const category of categories) {
+        const style = campsiteStyle(category);
+        items.push({ color: style.color, label: style.label, meta: "camp", marker: true });
+      }
+    } else if (categories.length) {
+      items.push({ color: "#007c91", label: `${visibleCampsites(routes).length} camps`, meta: "shown", marker: true });
+    }
+  }
+  els.mapLegend.hidden = !items.length;
+  els.mapLegend.classList.toggle("compact", !route);
   els.mapLegend.replaceChildren(...items.map((item) => {
     const row = document.createElement("div");
     row.className = "legend-row";
-    row.innerHTML = `<span class="legend-line ${item.dashed ? "dashed" : ""}" style="background:${item.color}"></span><span>${escapeHtml(item.label)}</span><em>${escapeHtml(item.meta)}</em>`;
+    row.innerHTML = `<span class="${item.marker ? "legend-dot" : item.area ? "legend-area" : "legend-line"} ${item.dashed ? "dashed" : ""}" style="background:${item.color}"></span><span>${escapeHtml(item.label)}</span><em>${escapeHtml(item.meta)}</em>`;
     return row;
   }));
 }
@@ -1278,12 +1705,11 @@ function renderDetails() {
         <strong>${escapeHtml(item.name)}</strong>
         <div class="day-meta">${escapeHtml(item.region || labelGroup(item.group))} &middot; ${item.distanceMi || 0} mi &middot; ${(item.gainFt || 0).toLocaleString()} ft &middot; ${item.days.length} days &middot; ${escapeHtml(item.shape || "route")}</div>
         <span class="pill-row">
-          <span class="pill ${routeMaturity(item)}">${labelMaturity(routeMaturity(item))}</span>
-          <span class="pill ${routeGateStatus(item)}">${labelGateStatus(routeGateStatus(item))}</span>
-          <span class="pill ${rideReadyClearanceClass(item)}">${rideReadyClearanceLabel(item)}</span>
-          <span class="pill ${gateChipClass(topGate(item))}">${browseConcernLabel(item)}</span>
-          <span class="pill">${escapeHtml(item.difficultyProfile?.beginnerSuitability || "fit TBD")}</span>
-          <span class="pill ${gateCountClass(item)}">${gateCountLabel(item)}</span>
+          <span class="pill ${routeMaturityClass(item)}">${routeMaturityLabel(item)}</span>
+          <span class="pill ${rideReadyStatusClass(item)}">${rideReadyStatusLabel(item)}</span>
+          <span class="pill ${gateChipClass(topGate(item))}">Work required: ${escapeHtml(topGateLabel(item))}</span>
+          ${routeDifficultyChip(item)}
+          <span class="pill ${gateCountClass(item)}">${gateSummaryLabel(item)}</span>
         </span>
         <p class="route-note">${escapeHtml(item.description || item.sourceNote || "")}</p>
         ${sourceLinkHtml(item)}`;
@@ -1295,46 +1721,40 @@ function renderDetails() {
   els.detailTitle.textContent = route.name;
   els.detailMeta.textContent = `route overview | ${route.days.length} days | ${labelMaturity(routeMaturity(route))} | ${labelGateStatus(routeGateStatus(route))}`;
   const overview = document.createElement("div");
-  overview.className = "overview-card route-overview-card";
+  const gateStatus = routeGateStatus(route);
+  const maturity = routeMaturity(route);
+  const primaryGate = topGate(route);
+  const isGateConfirmed = gateStatus === "confirmed";
+  overview.className = `overview-card route-overview-card route-status-card ${isGateConfirmed ? "pass" : "blocked"}`;
   overview.innerHTML = `
-    <strong>${escapeHtml(route.name)}</strong>
-    <div class="trip-summary-grid">
-      ${overviewFact("Region", route.region || labelGroup(route.group))}
-      ${overviewFact("Distance", `${route.distanceMi || 0} mi`)}
-      ${overviewFact("Gain", `${(route.gainFt || 0).toLocaleString()} ft`)}
-      ${overviewFact("Days", `${route.days.length}`)}
-      ${overviewFact("Shape", route.shape)}
-      ${overviewFact("Best season", route.bestSeason)}
-    </div>
-    <span class="pill-row primary-pills">
-      <span class="pill ${routeMaturity(route)}">${labelMaturity(routeMaturity(route))}</span>
-      <span class="pill ${routeGateStatus(route)}">${labelGateStatus(routeGateStatus(route))}</span>
-      <span class="pill ${rideReadyClearanceClass(route)}">${rideReadyClearanceLabel(route)}</span>
-      <span class="pill ${gateChipClass(topGate(route))}">${browseConcernLabel(route)}</span>
-      <span class="pill ${route.sourceQuality}">${labelQuality(route.sourceQuality)}</span>
-    </span>
-    ${sourceLinkHtml(route)}
-    <div class="planning-status ${routeGateStatus(route) === "confirmed" ? "pass" : ""}">
-      <strong>Maturity & operational gates</strong>
-      <span>${routeGateStatus(route) === "confirmed" ? "Every gate is confirmed for the selected departure window." : "Route research maturity is separate from date-specific rideability."}</span>
-      <div class="route-overview-grid">
-        ${overviewFact("Main thing to verify", browseConcernLabel(route))}
-        ${overviewFact("Open checks", gateCountLabel(route))}
-        ${overviewFact("Gate status", labelGateStatus(routeGateStatus(route)))}
+    <div class="route-status-header">
+      <div>
+        <span class="status-kicker">${escapeHtml(labelMaturity(maturity))} | ${escapeHtml(labelQuality(route.sourceQuality))}</span>
+        <strong>${escapeHtml(routeStatusHeadline(route))}</strong>
+        <p>${escapeHtml(routeStatusSentence(route))}</p>
       </div>
+      <span class="status-badge ${escapeHtml(gateStatus)}">${escapeHtml(labelGateStatus(gateStatus))}</span>
+    </div>
+    <div class="route-metric-strip">
+      ${routeMetric("Distance", `${route.distanceMi || 0} mi`)}
+      ${routeMetric("Gain", `${(route.gainFt || 0).toLocaleString()} ft`)}
+      ${routeMetric("Days", `${route.days.length}`)}
+      ${routeMetric("Region", route.region || labelGroup(route.group))}
+      ${routeMetric("Shape", route.shape)}
+    </div>
+    ${sourceLinkHtml(route)}
+    <div class="before-ready-strip">
+      <strong>${escapeHtml(isGateConfirmed ? "Confirmed" : "Before ride-ready")}</strong>
+      <span>${escapeHtml(visibleGateCountLabel(route, 5))}</span>
+      <span>${escapeHtml(primaryGate.detail || primaryGate.label || "Route-specific checks remain open.")}</span>
       <div class="gate-strip">${gateChipsHtml(route, 5)}</div>
     </div>
-    <div class="logistics-panel">
-      <strong>Known logistics</strong>
-      <div class="route-overview-grid">
-        ${overviewFact("Difficulty", route.difficulty || route.difficultyProfile?.overall)}
-        ${overviewFact("Surface", route.surfaceMix || route.gravelLevel)}
-        ${overviewFact("Camping / lodging", route.resources?.camping || route.resources?.lodging)}
-        ${overviewFact("Water / resupply", route.resources?.water || route.resources?.resupply)}
-        ${overviewFact("Hazards", firstListValue(route.hazards))}
-        ${overviewFact("Exports", "GPX and GeoJSON are local; refresh evidence before riding.")}
-      </div>
-      ${sourceListHtml(route)}
+    <div class="route-quick-notes">
+      ${quickNote("Season", route.bestSeason)}
+      ${quickNote("Surface", route.surfaceMix || route.gravelLevel)}
+      ${quickNote("Camp", route.resources?.camping || route.resources?.lodging)}
+      ${quickNote("Water", route.resources?.water || route.resources?.resupply)}
+      ${quickNote("Hazard", firstListValue(route.hazards))}
     </div>`;
   const cards = route.days.map((day) => {
     const card = document.createElement("div");
@@ -1349,7 +1769,7 @@ function renderReviewPanel() {
   const route = selectedRoute();
   if (!route) {
     els.reviewMeta.textContent = "select route";
-    els.reviewPanel.innerHTML = "<p class=\"route-note\">Vetting evidence appears after you select a route. Browse first, then use this area for promotion gates, blockers, dated evidence, and handoff notes.</p>";
+    els.reviewPanel.innerHTML = "<p class=\"route-note\">Vetting evidence appears after you select a route. Browse first, then use this area for ride-ready work, blockers, dated evidence, and handoff notes.</p>";
     return;
   }
   const review = route.review || {};
@@ -1363,7 +1783,7 @@ function renderReviewPanel() {
       <span>${escapeHtml(rideReadyClearanceTitle(route))} | ${escapeHtml(gateCountLabel(route))} | ${escapeHtml(browseConcernLabel(route))}</span>
     </div>
     <details class="evidence-disclosure"${openAttr}>
-      <summary>Evidence & gates</summary>
+      <summary>Evidence & ride-ready work</summary>
       <div class="evidence-disclosure-body">
         <div class="qa-callout ${route.mapQuality?.terrainVisible ? "pass" : "fail"}">
           <strong>Map QA</strong>
@@ -1411,7 +1831,7 @@ function readinessScoreCallout(route) {
   const blocked = (score.blockerCount || 0) > 0 || routeGateStatus(route) !== "confirmed";
   return `<div class="qa-callout ${blocked ? "fail" : value >= 70 ? "pass" : ""}">
     <strong>${escapeHtml(rideReadyClearanceTitle(route))}</strong>
-    <span>${score.blockerCount || 0} blockers | ${score.requiredActionCount || 0} required gates | ${score.passGateCount || 0}/${score.gateCount || 6} operational gates pass | gate score ${value}/100, not route quality</span>
+    <span>${score.blockerCount || 0} blockers | ${score.requiredActionCount || 0} work items | ${score.passGateCount || 0}/${score.gateCount || 6} checks pass | clearance score ${value}/100, not route quality</span>
   </div>`;
 }
 
@@ -1426,7 +1846,7 @@ function promotionChecklistBlock(checklist) {
     ["Map artifacts", checklist.mapArtifacts],
     ["Decision", checklist.finalDecision],
   ];
-  return `<strong>Operational gate checks</strong><div class="check-grid">${items.map(([label, value, note]) => checkItem(label, value, note)).join("")}</div>`;
+  return `<strong>Ride-ready work checks</strong><div class="check-grid">${items.map(([label, value, note]) => checkItem(label, value, note)).join("")}</div>`;
 }
 
 function promotionActionsBlock(actions = []) {
@@ -1741,7 +2161,9 @@ function applyMapPreviewTransform() {
   const ty = rect.height / 2 - scale * rect.height / 2 + scale * (baseCenterWorld[1] - currentCenterWorld[1]);
   const transform = `translate3d(${tx.toFixed(2)}px, ${ty.toFixed(2)}px, 0) scale(${scale.toFixed(5)})`;
   els.tileLayer.style.transform = transform;
+  els.dispersedSvg.style.transform = transform;
   els.routeSvg.style.transform = transform;
+  els.campsiteSvg.style.transform = transform;
   state.map.zoomPreviewing = true;
 }
 
@@ -1752,7 +2174,9 @@ function resetMapPreviewTransform() {
   }
   if (!state.map.zoomPreviewing) return;
   els.tileLayer.style.transform = "";
+  els.dispersedSvg.style.transform = "";
   els.routeSvg.style.transform = "";
+  els.campsiteSvg.style.transform = "";
   state.map.zoomPreviewing = false;
 }
 
@@ -1797,11 +2221,12 @@ function project(coord, context = projectionContext()) {
 }
 
 function drawTiles(rect) {
+  const provider = TILE_PROVIDERS[state.basemap] || TILE_PROVIDERS.fast;
   const tileZoom = clamp(Math.floor(state.map.zoom), state.map.minZoom, state.map.maxZoom);
   const scale = 2 ** (state.map.zoom - tileZoom);
   const center = lonLatToWorld(state.map.center[0], state.map.center[1], tileZoom);
   const topLeft = [center[0] - rect.width / (2 * scale), center[1] - rect.height / (2 * scale)];
-  const tileBuffer = 1;
+  const tileBuffer = state.map.dragging || state.map.zoomPreviewing || tileZoom <= 7 ? 0 : 1;
   const minX = Math.floor(topLeft[0] / 256) - tileBuffer;
   const minY = Math.floor(topLeft[1] / 256) - tileBuffer;
   const maxX = Math.floor((topLeft[0] + rect.width / scale) / 256) + tileBuffer;
@@ -1814,20 +2239,23 @@ function drawTiles(rect) {
       if (y < 0 || y >= maxTile) continue;
       const wrappedX = ((x % maxTile) + maxTile) % maxTile;
       const key = `${tileZoom}/${wrappedX}/${y}`;
-      const img = state.map.tileNodes.get(key) || document.createElement("img");
-      const subdomain = ["a", "b", "c"][(wrappedX + y) % 3];
+      const cacheKey = `${state.basemap}:${key}`;
+      const img = state.map.tileNodes.get(cacheKey) || document.createElement("img");
+      const subdomain = provider.subdomains[(wrappedX + y) % provider.subdomains.length];
       if (!img.dataset.tileKey) {
         img.alt = "";
         img.decoding = "async";
-        img.loading = "eager";
-        img.dataset.tileKey = key;
-        img.src = `https://${subdomain}.tile.opentopomap.org/${key}.png`;
+        img.loading = "lazy";
+        img.dataset.tileKey = cacheKey;
+        img.dataset.provider = provider.name;
+        img.referrerPolicy = "no-referrer";
+        img.src = provider.url(subdomain, key);
       }
       img.style.left = `${Math.round((x * 256 - topLeft[0]) * scale)}px`;
       img.style.top = `${Math.round((y * 256 - topLeft[1]) * scale)}px`;
       img.style.width = `${Math.ceil(256 * scale)}px`;
       img.style.height = `${Math.ceil(256 * scale)}px`;
-      nextTileNodes.set(key, img);
+      nextTileNodes.set(cacheKey, img);
       fragment.appendChild(img);
     }
   }
@@ -1949,7 +2377,7 @@ async function saveEditRequest(event) {
 async function copyEditPrompt() {
   const text = els.editText.value.trim();
   const route = selectedRoute();
-  const prompt = `Route edit request for bikepacking_planner.\nTrip: ${state.trip.id}\nRoute: ${route?.name || "All Route Options"}\nCurrent maturity: ${route ? labelMaturity(routeMaturity(route)) : "mixed"}\nCurrent gate status: ${route ? labelGateStatus(routeGateStatus(route)) : "mixed"}\nRequest: ${text}\nPreserve source-quality labels, route shape labels, maturity, gate status, terrain/topographic basemap QA, resources, difficulty dimensions, GPX/GeoJSON exports, variants, elevation comparisons, and local-cache reuse.`;
+  const prompt = `Route edit request for bikepacking_planner.\nTrip: ${state.trip.id}\nRoute: ${route?.name || "All Route Options"}\nCurrent maturity: ${route ? labelMaturity(routeMaturity(route)) : "mixed"}\nCurrent ride-ready work status: ${route ? labelGateStatus(routeGateStatus(route)) : "mixed"}\nRequest: ${text}\nPreserve source-quality labels, route shape labels, maturity, ride-ready work status, terrain/topographic basemap QA, resources, difficulty dimensions, GPX/GeoJSON exports, variants, elevation comparisons, and local-cache reuse.`;
   try {
     await navigator.clipboard.writeText(prompt);
     els.editStatus.textContent = "prompt copied";
@@ -1960,10 +2388,11 @@ async function copyEditPrompt() {
 
 function labelQuality(value) {
   return {
-    official_gpx: "Official GPX",
-    routed_approximation: "Routed approx",
-    concept: "Rough sketch",
-    verified_variant: "Verified variant",
+    official_gpx: "Official route file",
+    user_provided_gpx: "User-provided GPX",
+    routed_approximation: "Approximate route",
+    concept: "Research lead",
+    verified_variant: "Source-backed route",
   }[value] || value || "Unknown";
 }
 
@@ -1989,12 +2418,37 @@ function labelMaturity(value) {
   }[value] || "Candidate";
 }
 
+function routeMaturityLabel(route) {
+  if (route?.status === "ride_ready") return "Ride-ready plan";
+  if (route?.sourceQuality === "concept") return "Research lead";
+  return "Planning material";
+}
+
+function routeMaturityClass(route) {
+  if (route?.status === "ride_ready") return "ride_ready";
+  if (route?.sourceQuality === "concept") return "concept";
+  return "planning_grade";
+}
+
 function labelGateStatus(value) {
   return {
-    blocked: "Gate Blocked",
-    partial: "Gate Partial",
-    confirmed: "Gate Confirmed",
-  }[value] || "Gate Partial";
+    blocked: "Work required",
+    partial: "Needs review",
+    confirmed: "Ride-ready",
+  }[value] || "Needs review";
+}
+
+function rideReadyStatusLabel(route) {
+  if (routeGateStatus(route) === "confirmed") return "Ride-ready";
+  const gates = biggestGates(route, 20).length;
+  if (gates) return "Not ride-ready";
+  return "Needs final check";
+}
+
+function rideReadyStatusClass(route) {
+  if (routeGateStatus(route) === "confirmed") return "readiness_good";
+  if (biggestGates(route, 20).some((gate) => gate.severity === "blocker")) return "readiness_blocked";
+  return "readiness_candidate";
 }
 
 function labelDecision(value) {
@@ -2002,8 +2456,8 @@ function labelDecision(value) {
     candidate: "candidate",
     top_candidate: "strong candidate",
     close_candidate: "close candidate",
-    near_ride_ready: "near gate-confirmed",
-    ride_ready_with_final_refresh: "gate-confirmed with final refresh",
+    near_ride_ready: "close to ride-ready",
+    ride_ready_with_final_refresh: "ride-ready with final refresh",
     reject_rework: "blocked / rework",
     segment_only: "segment only",
     rework: "rework",
@@ -2021,19 +2475,19 @@ function labelTargetWindow(route) {
 }
 
 function rideReadyClearanceTitle(route) {
-  if (routeGateStatus(route) === "confirmed") return "Gate status: confirmed";
+  if (routeGateStatus(route) === "confirmed") return "Ride-ready status: confirmed";
   const blockers = route.readinessScore?.blockerCount || 0;
-  if (blockers) return "Gate status: blocked";
-  return "Gate status: partial";
+  if (blockers) return "Ride-ready work required";
+  return "Ride-ready status: needs review";
 }
 
 function rideReadyClearanceLabel(route) {
-  if (routeGateStatus(route) === "confirmed") return "gates confirmed";
+  if (routeGateStatus(route) === "confirmed") return "Ride-ready";
   const blockers = route.readinessScore?.blockerCount || 0;
-  if (blockers) return "gates blocked";
+  if (blockers) return "Work required";
   const required = route.readinessScore?.requiredActionCount || 0;
-  if (required) return "gates partial";
-  return "gates partial";
+  if (required) return "Needs review";
+  return "Needs review";
 }
 
 function rideReadyClearanceClass(route) {
@@ -2067,7 +2521,7 @@ function mainBlockerLabel(route) {
   const blocker = (route.promotionActions || []).find((action) => action.priority === "blocker");
   if (blocker?.category) return `blocker: ${blocker.category}`;
   const decision = route.promotionChecklist?.finalDecision || "";
-  if (routeGateStatus(route) === "confirmed" || decision === "ride_ready_with_final_refresh") return "gates confirmed";
+  if (routeGateStatus(route) === "confirmed" || decision === "ride_ready_with_final_refresh") return "ride-ready";
   const windowFit = route.promotionChecklist?.targetWindowFit || "";
   if (windowFit === "needs_refresh") return "needs date refresh";
   if (windowFit === "blocker") return "date/window blocker";
@@ -2076,7 +2530,7 @@ function mainBlockerLabel(route) {
 
 function topGate(route) {
   return biggestGates(route, 1)[0] || {
-    label: routeGateStatus(route) === "confirmed" ? "gate confirmed" : "planning check TBD",
+    label: routeGateStatus(route) === "confirmed" ? "Ride-ready" : "Planning check TBD",
     severity: routeGateStatus(route) === "confirmed" ? "pass" : "needs",
   };
 }
@@ -2086,29 +2540,45 @@ function topGateLabel(route) {
 }
 
 function browseConcernLabel(route) {
-  if (routeGateStatus(route) === "confirmed") return "Gate confirmed";
+  if (routeGateStatus(route) === "confirmed") return "Ride-ready";
   const label = topGateLabel(route);
   return {
-    "camp/permit unresolved": "Needs camp check",
-    "segment-level bike legality": "Needs bike-legality check",
-    "water/resupply gap": "Needs water check",
-    "fire/smoke/weather": "Needs fire/weather refresh",
-    "closure overlay": "Needs closure check",
-    "export/map QA": "Needs export/map QA",
-    "date/window unresolved": "Needs date check",
-    "bailout unresolved": "Needs bailout plan",
-    "source evidence gap": "Needs source check",
+    "Camp/permit not confirmed": "Needs camp check",
+    "Bike legality audit needed": "Needs bike-legality check",
+    "Traffic/shoulder review": "Needs traffic/shoulder review",
+    "Water/resupply not confirmed": "Needs water check",
+    "Fire/weather refresh": "Needs fire/weather refresh",
+    "Closure check needed": "Needs closure check",
+    "Map/export QA needed": "Needs map/export QA",
+    "Trip dates not cleared": "Needs date check",
+    "Bailout plan missing": "Needs bailout plan",
+    "Source evidence gap": "Needs source check",
   }[label] || `Needs ${label}`;
 }
 
 function gateCountLabel(route) {
   const blockers = route.readinessScore?.blockerCount || 0;
   const required = route.readinessScore?.requiredActionCount || 0;
-  if (routeGateStatus(route) === "confirmed" && !blockers && !required) return "0 open gates";
+  if (routeGateStatus(route) === "confirmed" && !blockers && !required) return "0 work items";
   if (blockers) return `${blockers} blocker${blockers === 1 ? "" : "s"}`;
-  if (required) return `${required} required gate${required === 1 ? "" : "s"}`;
+  if (required) return `${required} work item${required === 1 ? "" : "s"}`;
   const gates = biggestGates(route, 6).length;
-  return `${gates} open gate${gates === 1 ? "" : "s"}`;
+  return `${gates} work item${gates === 1 ? "" : "s"}`;
+}
+
+function visibleGateCountLabel(route, limit = 5) {
+  const gates = biggestGates(route, limit);
+  if (routeGateStatus(route) === "confirmed" && !gates.length) return "0 work items";
+  const shown = gates.length;
+  const total = biggestGates(route, 20).length;
+  const noun = shown === 1 ? "work item" : "work items";
+  return total > shown ? `Top ${shown} of ${total} ${noun}` : `${shown} ${noun}`;
+}
+
+function gateSummaryLabel(route) {
+  const total = biggestGates(route, 20).length;
+  if (routeGateStatus(route) === "confirmed" && !total) return "No ride-ready work";
+  return `${total} ride-ready work ${total === 1 ? "item" : "items"}`;
 }
 
 function gateCountClass(route) {
@@ -2116,6 +2586,17 @@ function gateCountClass(route) {
   if (routeGateStatus(route) === "confirmed" && !blockers) return "readiness_good";
   if (blockers) return "readiness_blocked";
   return "readiness_candidate";
+}
+
+function surfaceLabel(route) {
+  const surface = route.gravelLevel || route.surfaceMix || "surface TBD";
+  return `Surface ${String(surface).replace(/_/g, " ")}`;
+}
+
+function routeDifficultyChip(route) {
+  const difficulty = route.difficulty || route.difficultyProfile?.beginnerSuitability || "";
+  if (!difficulty || /tbd|unknown|fit tbd/i.test(difficulty)) return "";
+  return `<span class="pill">${escapeHtml(difficulty)}</span>`;
 }
 
 function gateChipClass(gate) {
@@ -2127,7 +2608,7 @@ function gateChipClass(gate) {
 function gateChipsHtml(route, limit = 5) {
   const gates = biggestGates(route, limit);
   if (!gates.length) {
-    return `<span class="gate-chip pass">gate confirmed</span>`;
+    return `<span class="gate-chip pass">Ride-ready</span>`;
   }
   return gates.map((gate) => `<span class="gate-chip ${escapeHtml(gate.severity)}" title="${escapeHtml(gate.detail || gate.label)}">${escapeHtml(gate.label)}</span>`).join("");
 }
@@ -2203,20 +2684,47 @@ function dedupeGates(gates) {
 
 function compactGateLabel(category = "", detail = "") {
   const text = `${category} ${detail}`.toLowerCase();
-  if (text.includes("camp") || text.includes("permit") || text.includes("reservation") || text.includes("overnight")) return "camp/permit unresolved";
-  if (text.includes("legal") || text.includes("bike") || text.includes("bicycle") || text.includes("segment")) return "segment-level bike legality";
-  if (text.includes("water") || text.includes("resupply")) return "water/resupply gap";
-  if (text.includes("fire") || text.includes("smoke") || text.includes("weather") || text.includes("heat") || text.includes("aqi")) return "fire/smoke/weather";
-  if (text.includes("closure") || text.includes("closed")) return "closure overlay";
-  if (text.includes("gpx") || text.includes("geojson") || text.includes("export") || text.includes("map") || text.includes("geometry")) return "export/map QA";
-  if (text.includes("target") || text.includes("date") || text.includes("july") || text.includes("weekend") || text.includes("window")) return "date/window unresolved";
-  if (text.includes("bailout")) return "bailout unresolved";
-  if (text.includes("source")) return "source evidence gap";
-  return labelKey(category || "open gate").toLowerCase();
+  if (text.includes("camp") || text.includes("permit") || text.includes("reservation") || text.includes("overnight")) return "Camp/permit not confirmed";
+  if (text.includes("legal") || text.includes("bike") || text.includes("bicycle") || text.includes("segment")) return "Bike legality audit needed";
+  if (text.includes("traffic") || text.includes("shoulder") || text.includes("highway") || text.includes("road stress") || text.includes("paved connector")) return "Traffic/shoulder review";
+  if (text.includes("water") || text.includes("resupply")) return "Water/resupply not confirmed";
+  if (text.includes("fire") || text.includes("smoke") || text.includes("weather") || text.includes("heat") || text.includes("aqi")) return "Fire/weather refresh";
+  if (text.includes("closure") || text.includes("closed")) return "Closure check needed";
+  if (text.includes("gpx") || text.includes("geojson") || text.includes("export") || text.includes("map") || text.includes("geometry")) return "Map/export QA needed";
+  if (text.includes("target") || text.includes("date") || text.includes("july") || text.includes("weekend") || text.includes("window")) return "Trip dates not cleared";
+  if (text.includes("bailout")) return "Bailout plan missing";
+  if (text.includes("source")) return "Source evidence gap";
+  if (String(category || "").toLowerCase().trim() === "blocker") return "Route-specific blocker";
+  return labelKey(category || "work item").toLowerCase().trim();
 }
 
 function overviewFact(label, value) {
   return `<span><strong>${escapeHtml(label)}</strong><em>${escapeHtml(value || "TBD")}</em></span>`;
+}
+
+function routeMetric(label, value) {
+  return `<span><strong>${escapeHtml(value || "TBD")}</strong><em>${escapeHtml(label)}</em></span>`;
+}
+
+function quickNote(label, value) {
+  if (!value) return "";
+  return `<p><strong>${escapeHtml(label)}</strong><span>${escapeHtml(value)}</span></p>`;
+}
+
+function routeStatusSentence(route) {
+  if (routeGateStatus(route) === "confirmed") {
+    return "This route has passed the imported ride-ready checks. Still refresh closures, weather, and water before departure.";
+  }
+  const gateLabels = biggestGates(route, 3).map((gate) => gate.label).filter(Boolean);
+  const open = gateCountLabel(route);
+  const source = labelQuality(route.sourceQuality).toLowerCase();
+  return `Useful ${source} planning material with ${open}; current ride-ready work includes ${gateLabels.join(", ") || "route-specific verification"}.`;
+}
+
+function routeStatusHeadline(route) {
+  if (routeGateStatus(route) === "confirmed") return "Ride-ready checks are confirmed";
+  const gates = biggestGates(route, 2).map((gate) => gate.label).filter(Boolean);
+  return `Not ride-ready: ${gates.join(" + ") || browseConcernLabel(route)}`;
 }
 
 function sourceLinkHtml(route, options = {}) {

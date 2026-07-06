@@ -498,6 +498,7 @@ textarea {
 }
 
 .pill.official_gpx { color: #215b80; }
+.pill.user_provided_gpx { color: #1f6b72; }
 .pill.routed_approximation { color: #7b5520; }
 .pill.concept { color: #8d3d2d; }
 .pill.verified_variant { color: #23624a; }
@@ -555,7 +556,11 @@ textarea {
   height: min(76vh, 760px);
   min-height: 540px;
   overflow: hidden;
-  background: #e7dfcf;
+  background:
+    linear-gradient(rgba(255, 253, 248, 0.72), rgba(255, 253, 248, 0.72)),
+    repeating-linear-gradient(0deg, rgba(31, 45, 41, 0.07) 0, rgba(31, 45, 41, 0.07) 1px, transparent 1px, transparent 64px),
+    repeating-linear-gradient(90deg, rgba(31, 45, 41, 0.055) 0, rgba(31, 45, 41, 0.055) 1px, transparent 1px, transparent 64px),
+    #ece8dc;
   cursor: grab;
   touch-action: none;
   user-select: none;
@@ -566,7 +571,9 @@ textarea {
 }
 
 .tile-layer,
-.route-svg {
+.dispersed-svg,
+.route-svg,
+.campsite-svg {
   position: absolute;
   inset: 0;
   transform-origin: 0 0;
@@ -578,14 +585,37 @@ textarea {
   width: 256px;
   height: 256px;
   user-select: none;
-  opacity: 0.58;
-  filter: grayscale(0.38) saturate(0.46) contrast(0.82) brightness(1.16);
-  transition: opacity 180ms ease, filter 180ms ease;
+  opacity: 1;
+  filter: grayscale(0.02) saturate(1) contrast(1.02) brightness(0.99);
+  transition: opacity 120ms ease, filter 120ms ease;
 }
 
 .map.is-overview-zoomed-out .tile-layer img {
-  opacity: 0.24;
-  filter: grayscale(0.72) saturate(0.22) contrast(0.74) brightness(1.24);
+  opacity: 0.76;
+  filter: grayscale(0.2) saturate(0.78) contrast(0.96) brightness(1.03);
+}
+
+.dispersed-svg {
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.dispersed-area {
+  fill-opacity: 0.14;
+  stroke-opacity: 0.42;
+  stroke-width: 1.15;
+  vector-effect: non-scaling-stroke;
+}
+
+.map.is-overview-zoomed-out .dispersed-area {
+  fill-opacity: 0.1;
+  stroke-opacity: 0.32;
+}
+
+.dispersed-hidden .dispersed-svg {
+  display: none;
 }
 
 .route-svg {
@@ -593,6 +623,48 @@ textarea {
   height: 100%;
   z-index: 2;
   pointer-events: auto;
+}
+
+.campsite-svg {
+  width: 100%;
+  height: 100%;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.campsite-marker {
+  pointer-events: auto;
+  cursor: pointer;
+  outline: none;
+}
+
+.campsite-halo {
+  fill: rgba(31, 45, 41, 0.92);
+  stroke: rgba(31, 45, 41, 0.86);
+  stroke-width: 1.8;
+  filter: drop-shadow(0 3px 8px rgba(31, 45, 41, 0.22));
+}
+
+.campsite-marker circle {
+  stroke: rgba(31, 45, 41, 0.92);
+  stroke-width: 2.2;
+}
+
+.campsite-icon {
+  fill: rgba(255, 253, 248, 0.94);
+  stroke: none;
+  pointer-events: none;
+}
+
+.campsite-marker:hover .campsite-halo,
+.campsite-marker:focus-visible .campsite-halo,
+.campsite-marker.active .campsite-halo {
+  stroke: rgba(0, 0, 0, 0.92);
+  stroke-width: 2.2;
+}
+
+.campsites-hidden .campsite-svg {
+  display: none;
 }
 
 .route-line {
@@ -611,11 +683,11 @@ textarea {
 
 .map.is-overview-zoomed-out .route-line.shadow.overview {
   stroke-width: 11;
-  stroke: rgba(255, 253, 248, 0.98);
+  stroke: rgba(15, 22, 20, 0.82);
 }
 
 .route-line.shadow {
-  stroke: rgba(255, 253, 248, 0.98);
+  stroke: rgba(15, 22, 20, 0.78);
   stroke-width: 14;
   pointer-events: none;
 }
@@ -664,6 +736,67 @@ textarea {
   font-size: 0.78rem;
 }
 
+.map-layer-controls {
+  position: absolute;
+  right: 12px;
+  top: 12px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: auto;
+  min-width: 0;
+  padding: 5px 6px;
+  border: 1px solid rgba(31, 45, 41, 0.2);
+  border-radius: 8px;
+  background: rgba(255, 253, 248, 0.9);
+  color: var(--ink);
+  box-shadow: 0 8px 20px rgba(31, 45, 41, 0.12);
+  font-size: 0.72rem;
+}
+
+.map-layer-controls label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 5px;
+  font-weight: 850;
+}
+
+.map-layer-controls .basemap-control > span {
+  color: var(--muted);
+}
+
+.map-layer-controls .map-layer-toggle {
+  min-height: 28px;
+  padding: 0 7px;
+  border: 1px solid rgba(31, 45, 41, 0.16);
+  border-radius: 7px;
+  background: rgba(255, 253, 248, 0.74);
+  justify-content: flex-start;
+  gap: 5px;
+  color: var(--ink);
+  font-size: 0.72rem;
+}
+
+.map-layer-controls input[type="checkbox"] {
+  width: 13px;
+  height: 13px;
+  accent-color: var(--accent);
+}
+
+.map-layer-controls select {
+  width: 118px;
+  min-width: 0;
+  height: 28px;
+  border: 1px solid rgba(31, 45, 41, 0.18);
+  border-radius: 7px;
+  background: rgba(255, 253, 248, 0.98);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 760;
+}
+
 .map-legend {
   position: absolute;
   left: 12px;
@@ -682,11 +815,49 @@ textarea {
   font-size: 0.78rem;
 }
 
+.map-legend.compact {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: min(520px, calc(100% - 84px));
+  max-height: none;
+  overflow: visible;
+  padding: 6px 8px;
+  background: rgba(255, 253, 248, 0.78);
+  font-size: 0.72rem;
+}
+
 .legend-row {
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr) auto;
   gap: 7px;
   align-items: center;
+}
+
+.map-legend.compact .legend-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.map-legend.compact .legend-line {
+  width: 20px;
+}
+
+.map-legend.compact .legend-area {
+  width: 16px;
+  height: 10px;
+}
+
+.map-legend.compact .legend-dot {
+  width: 9px;
+  height: 9px;
+  box-shadow: 0 0 0 2px rgba(31, 45, 41, 0.18);
+}
+
+.map-legend.compact .legend-row em {
+  display: none;
 }
 
 .legend-row em {
@@ -702,6 +873,25 @@ textarea {
   box-shadow: 0 0 0 2px rgba(255, 253, 248, 0.9);
 }
 
+.legend-dot {
+  width: 12px;
+  height: 12px;
+  justify-self: center;
+  border-radius: 999px;
+  box-shadow: 0 0 0 3px rgba(255, 253, 248, 0.96), 0 0 0 4px rgba(31, 45, 41, 0.16);
+}
+
+.legend-area {
+  display: inline-block;
+  width: 22px;
+  height: 14px;
+  justify-self: center;
+  border: 1.5px solid currentColor;
+  border-radius: 3px;
+  opacity: 0.78;
+  box-shadow: 0 0 0 2px rgba(255, 253, 248, 0.9);
+}
+
 .legend-line.dashed {
   background-image: repeating-linear-gradient(90deg, currentColor 0 10px, transparent 10px 16px);
 }
@@ -710,7 +900,7 @@ textarea {
   position: absolute;
   z-index: 5;
   right: 12px;
-  top: 12px;
+  top: 58px;
   display: grid;
   gap: 7px;
 }
@@ -734,6 +924,74 @@ textarea {
 .edit-actions button:hover {
   border-color: rgba(47, 123, 88, 0.5);
   background: #ffffff;
+}
+
+.campsite-popup {
+  position: absolute;
+  z-index: 6;
+  display: grid;
+  gap: 6px;
+  width: min(294px, calc(100% - 24px));
+  padding: 11px 12px;
+  border: 1px solid rgba(31, 45, 41, 0.2);
+  border-radius: 8px;
+  background: rgba(255, 253, 248, 0.97);
+  box-shadow: 0 14px 32px rgba(31, 45, 41, 0.18);
+  color: var(--ink);
+  font-size: 0.82rem;
+}
+
+.campsite-popup[hidden] {
+  display: none;
+}
+
+.campsite-popup strong {
+  padding-right: 26px;
+  font-size: 0.95rem;
+}
+
+.campsite-popup em {
+  color: var(--muted);
+  font-style: normal;
+  font-weight: 760;
+}
+
+.campsite-popup p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.campsite-popup a {
+  color: var(--accent);
+  font-weight: 850;
+}
+
+.campsite-popup-category {
+  justify-self: start;
+  padding: 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--site-color) 45%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--site-color) 10%, #fffdf8);
+  color: var(--site-color);
+  font-size: 0.72rem;
+  font-weight: 900;
+}
+
+.popup-close {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 26px;
+  height: 26px;
+  border: 1px solid rgba(31, 45, 41, 0.2);
+  border-radius: 999px;
+  background: #fffdf8;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 1rem;
+  font-weight: 900;
+  line-height: 1;
 }
 
 button:disabled {
@@ -775,6 +1033,138 @@ button:disabled {
 .browse-intro,
 .route-overview-card {
   grid-column: 1 / -1;
+}
+
+.route-status-card {
+  display: grid;
+  gap: 12px;
+  border-color: rgba(185, 77, 53, 0.22);
+  background: rgba(255, 249, 244, 0.86);
+}
+
+.route-status-card.pass {
+  border-color: rgba(47, 123, 88, 0.24);
+  background: rgba(241, 248, 243, 0.84);
+}
+
+.route-status-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.route-status-header > div {
+  display: grid;
+  gap: 5px;
+}
+
+.route-status-header strong {
+  color: var(--ink);
+  font-size: 1.02rem;
+}
+
+.route-status-header p {
+  max-width: 860px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.status-kicker {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 840;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.status-badge {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 4px 10px;
+  border: 1px solid rgba(185, 77, 53, 0.28);
+  border-radius: 999px;
+  background: rgba(250, 232, 225, 0.82);
+  color: #8d3d2d;
+  font-size: 0.78rem;
+  font-weight: 860;
+}
+
+.status-badge.confirmed {
+  border-color: rgba(47, 123, 88, 0.32);
+  background: rgba(232, 245, 238, 0.88);
+  color: #23624a;
+}
+
+.route-metric-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.route-metric-strip span {
+  display: inline-grid;
+  min-width: 88px;
+  gap: 1px;
+  padding: 7px 9px;
+  border: 1px solid rgba(31, 45, 41, 0.11);
+  border-radius: 8px;
+  background: rgba(255, 253, 248, 0.72);
+}
+
+.route-metric-strip strong {
+  color: var(--ink);
+  font-size: 0.9rem;
+}
+
+.route-metric-strip em {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-style: normal;
+  font-weight: 760;
+}
+
+.before-ready-strip {
+  display: grid;
+  gap: 7px;
+  padding: 10px;
+  border: 1px solid rgba(196, 139, 44, 0.28);
+  border-radius: 8px;
+  background: rgba(255, 247, 224, 0.62);
+}
+
+.before-ready-strip > span {
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.route-quick-notes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+}
+
+.route-quick-notes p {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  padding: 8px;
+  border: 1px solid rgba(31, 45, 41, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 253, 248, 0.58);
+}
+
+.route-quick-notes strong {
+  color: var(--ink);
+  font-size: 0.76rem;
+}
+
+.route-quick-notes span {
+  color: var(--muted);
+  font-size: 0.8rem;
 }
 
 .trip-summary-grid,
@@ -1226,6 +1616,18 @@ dd {
   .map-legend {
     max-width: calc(100% - 72px);
     max-height: 132px;
+  }
+
+  .map-layer-controls {
+    right: 10px;
+    top: 10px;
+    max-width: calc(100% - 84px);
+    padding: 5px 6px;
+  }
+
+  .campsite-popup {
+    max-height: 188px;
+    overflow: auto;
   }
 
   .bar-row {
