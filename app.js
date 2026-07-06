@@ -84,7 +84,7 @@ const MAX_LOCAL_STORAGE_CACHE_BYTES = 1_500_000;
 const OVERVIEW_ROUTE_POINTS = 260;
 const OVERVIEW_HIGHLIGHT_POINTS = 1000;
 const DETAIL_ROUTE_POINTS = 6000;
-const DATA_VERSION = "20260705-export-package-1";
+const DATA_VERSION = "20260705-all-routes-dispersed-1";
 const CAMPSITE_DATA_PATH = "california_route_stay_inventory.geojson";
 const BLM_CA_SMA_QUERY_URL = "https://gis.blm.gov/caarcgis/rest/services/lands/BLM_CA_LandStatus_SurfaceManagementAgency/FeatureServer/0/query";
 const CRC32_TABLE = Array.from({ length: 256 }, (_, index) => {
@@ -1191,6 +1191,7 @@ function renderRouteList() {
 }
 
 async function selectRoute(route) {
+  if (state.selectedRouteId === route.id) return;
   state.selectedRouteId = route.id;
   state.selectedCatalogueId = null;
   state.highlightedRouteId = null;
@@ -1200,7 +1201,6 @@ async function selectRoute(route) {
   try {
     await hydrateRoute(route);
     if (state.selectedRouteId === route.id) {
-      fitToRoutes([route]);
       drawAll();
     }
   } catch (error) {
@@ -1409,13 +1409,6 @@ function queueDispersedAreaLoad(projection) {
   const bounds = viewportBounds(projection);
   if (!bounds) return;
   const spanArea = Math.abs(bounds.east - bounds.west) * Math.abs(bounds.north - bounds.south);
-  if (!selectedRoute() && (state.map.zoom < 7 || spanArea > 10)) {
-    state.dispersedAreas = [];
-    state.dispersedAreasError = "";
-    state.dispersedAreasNotice = "Zoom in or select a route";
-    state.dispersedAreasRequestKey = "";
-    return;
-  }
   const cacheKey = dispersedAreaCacheKey(bounds, state.map.zoom);
   if (state.dispersedAreasRequestKey === cacheKey) return;
   if (state.dispersedAreasCache.has(cacheKey)) {
@@ -1433,7 +1426,9 @@ function queueDispersedAreaLoad(projection) {
       state.dispersedAreasCache.set(cacheKey, features);
       state.dispersedAreas = features;
       state.dispersedAreasError = "";
-      state.dispersedAreasNotice = features.length >= 1200 ? "Candidate layer may be clipped; zoom in for complete local detail" : "";
+      state.dispersedAreasNotice = features.length >= 1200 || (!selectedRoute() && (state.map.zoom < 6 || spanArea > 10))
+        ? "Zoom in for complete land detail"
+        : "";
     })
     .catch((error) => {
       state.dispersedAreasError = error.message || "Could not load candidate dispersed land.";
