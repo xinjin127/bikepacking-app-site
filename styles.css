@@ -130,6 +130,11 @@ textarea {
   background: rgba(255, 253, 248, 0.82);
 }
 
+body.route-selected .advanced-groups,
+body.route-selected .library-controls {
+  display: none;
+}
+
 .library-stats,
 .filter-row {
   display: flex;
@@ -432,6 +437,10 @@ textarea {
   overflow: auto;
 }
 
+body.route-selected .route-panel {
+  max-height: calc(100vh - 24px);
+}
+
 .panel-heading,
 .map-toolbar {
   display: flex;
@@ -709,6 +718,10 @@ textarea {
   cursor: grab;
   touch-action: none;
   user-select: none;
+}
+
+body.route-selected .map {
+  height: clamp(430px, 58vh, 640px);
 }
 
 .map.is-dragging {
@@ -1835,6 +1848,11 @@ dd {
   .map {
     height: 44vh;
     min-height: 320px;
+  }
+
+  body.route-selected .map {
+    height: 56vh;
+    min-height: 390px;
   }
 
   .readiness-dashboard {

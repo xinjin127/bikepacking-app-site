@@ -87,7 +87,7 @@ const MAX_LOCAL_STORAGE_CACHE_BYTES = 1_500_000;
 const OVERVIEW_ROUTE_POINTS = 260;
 const OVERVIEW_HIGHLIGHT_POINTS = 1000;
 const DETAIL_ROUTE_POINTS = 6000;
-const DATA_VERSION = "20260705-less-sensitive-route-click-1";
+const DATA_VERSION = "20260705-route-selected-map-space-1";
 const CAMPSITE_DATA_PATH = "california_route_stay_inventory.geojson";
 const STATIC_DATA_PREFIXES = [
   "data",
@@ -1271,6 +1271,7 @@ function pointToSegmentDistanceSq(point, a, b) {
 
 function drawAll() {
   if (!state.trip) return;
+  document.body.classList.toggle("route-selected", Boolean(selectedRoute()));
   renderGroupTabs();
   renderStyleFilters();
   renderFilterCounts();
@@ -2184,7 +2185,7 @@ function altitudeChartSvg(profile, color) {
   const lowLabel = `${Math.round(profile.minFt).toLocaleString()} ft`;
   const highLabel = `${Math.round(profile.maxFt).toLocaleString()} ft`;
   return `
-    <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Route altitude trace from ${escapeHtml(lowLabel)} to ${escapeHtml(highLabel)}">
+    <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="Route altitude trace from ${escapeHtml(lowLabel)} to ${escapeHtml(highLabel)}">
       <line class="altitude-grid" x1="${padX}" y1="${padY}" x2="${width - padX}" y2="${padY}"></line>
       <line class="altitude-grid" x1="${padX}" y1="${height - padY}" x2="${width - padX}" y2="${height - padY}"></line>
       <polygon class="altitude-area" points="${area}" style="fill:${escapeHtml(color)}"></polygon>
