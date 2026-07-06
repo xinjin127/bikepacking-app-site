@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Bikepacking Route Library</title>
-  <link rel="stylesheet" href="styles.css?v=20260705-map-controls-top-1">
+  <link rel="stylesheet" href="styles.css?v=20260705-map-select-same-detail-1">
 </head>
 <body>
   <main class="app-shell">
@@ -20,13 +20,20 @@
     </header>
 
     <details class="advanced-groups">
-      <summary>Advanced groups</summary>
+      <summary>Advanced filters</summary>
       <section class="group-tabs" id="groupTabs" aria-label="Route groups"></section>
     </details>
 
     <section class="library-controls" aria-label="Library filters">
-      <div class="library-stats" id="libraryStats"></div>
-      <div class="filter-row">
+      <div class="readiness-dashboard decision-dashboard" id="readinessDashboard"></div>
+      <div class="readiness-definitions" aria-label="Readiness definitions">
+        <span><strong>Ride-ready</strong> Current geometry, legality, overnight, water, closure/fire/weather, and export checks.</span>
+        <span><strong>Close</strong> Useful route with final checks remaining.</span>
+        <span><strong>Needs refresh</strong> Current campsite, closure, water, weather, or fire data is stale.</span>
+        <span><strong>Blocked</strong> Do not rely on it yet.</span>
+      </div>
+      <div class="filter-section-label">Plan a trip</div>
+      <div class="filter-row planning-filters">
         <label>
           Search
           <input id="routeSearch" type="search" placeholder="Route, region, tip, resource">
@@ -76,39 +83,44 @@
         <label>
           Surface
           <select id="gravelFilter">
-            <option value="all">All gravel levels</option>
-            <option value="low-medium">Low / medium</option>
-            <option value="medium">Medium</option>
-            <option value="high">High</option>
-          </select>
-        </label>
-        <label>
-          Readiness
-          <select id="readinessFilter">
-            <option value="all">All readiness</option>
-            <option value="best">Best candidates</option>
-            <option value="near">Close to ride-ready</option>
-            <option value="candidate">Needs refresh</option>
-            <option value="blocked">Blocked / rework</option>
-          </select>
-        </label>
-        <label>
-          Maturity
-          <select id="statusFilter">
-            <option value="all">All maturity</option>
-            <option value="candidate">Candidate</option>
-            <option value="concept">Concept</option>
-            <option value="plan_ready">Plan Ready</option>
+            <option value="all">Any surface mix</option>
+            <option value="low-medium">Mostly paved / light gravel</option>
+            <option value="medium">Mixed gravel</option>
+            <option value="high">Mostly gravel / dirt</option>
           </select>
         </label>
       </div>
-      <p class="filter-note">Trip-window filters use broad season notes. Campsites, fire, closures, weather, and water still need final route-specific refresh.</p>
+      <p class="filter-note"><strong>Date-specific readiness requires fresh checks.</strong> Campsites, fire, closures, weather, and water still need final route-specific refresh.</p>
       <div class="style-filters" id="styleFilters" aria-label="Trip style filters"></div>
+      <details class="vetting-filters">
+        <summary>Vetting status and route development filters</summary>
+        <div class="filter-row">
+          <label>
+            Readiness
+            <select id="readinessFilter">
+              <option value="all">All readiness</option>
+              <option value="best">Best candidates</option>
+              <option value="near">Close to ride-ready</option>
+              <option value="candidate">Needs current-condition refresh</option>
+              <option value="blocked">Blocked — do not use yet</option>
+            </select>
+          </label>
+          <label>
+            Route development stage
+            <select id="statusFilter">
+              <option value="all">All stages</option>
+              <option value="candidate">New candidate</option>
+              <option value="concept">Rough concept</option>
+              <option value="plan_ready">Planned / partially vetted</option>
+            </select>
+          </label>
+        </div>
+      </details>
       <div class="active-filter-row">
         <div class="active-filter-summary" id="activeFilterSummary"></div>
         <button type="button" id="clearFilters" class="clear-filters">Clear planning filters</button>
       </div>
-      <div class="readiness-dashboard" id="readinessDashboard"></div>
+      <div class="library-stats" id="libraryStats"></div>
     </section>
 
     <section class="planner-grid">
@@ -138,6 +150,8 @@
           <svg id="routeSvg" class="route-svg" role="img" aria-label="Route geometry"></svg>
           <svg id="campsiteSvg" class="campsite-svg" role="img" aria-label="Campsite locations"></svg>
           <div class="map-controls" aria-label="Map controls">
+            <button type="button" id="zoomIn" aria-label="Zoom in">+</button>
+            <button type="button" id="zoomOut" aria-label="Zoom out">-</button>
             <button type="button" id="fitMap" aria-label="Fit selected routes">Fit</button>
           </div>
           <div class="map-layer-controls" aria-label="Map layers">
@@ -223,6 +237,6 @@
 
     <section class="source-notes" id="sourceNotes"></section>
   </main>
-  <script src="app.js?v=20260705-map-controls-top-1"></script>
+  <script src="app.js?v=20260705-map-select-same-detail-1"></script>
 </body>
 </html>

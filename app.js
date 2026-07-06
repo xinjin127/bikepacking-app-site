@@ -81,7 +81,7 @@ const MAX_LOCAL_STORAGE_CACHE_BYTES = 1_500_000;
 const OVERVIEW_ROUTE_POINTS = 260;
 const OVERVIEW_HIGHLIGHT_POINTS = 1000;
 const DETAIL_ROUTE_POINTS = 6000;
-const DATA_VERSION = "20260705-map-controls-top-1";
+const DATA_VERSION = "20260705-map-select-same-detail-1";
 const CAMPSITE_DATA_PATH = "california_route_stay_inventory.geojson";
 const BLM_CA_SMA_QUERY_URL = "https://gis.blm.gov/caarcgis/rest/services/lands/BLM_CA_LandStatus_SurfaceManagementAgency/FeatureServer/0/query";
 const DISPERSED_AREA_STYLES = {
@@ -256,6 +256,18 @@ function setupMapInteractions() {
     state.dispersedAreasError = "";
     state.dispersedAreasNotice = "";
     drawMap();
+  });
+  els.routeSvg.addEventListener("click", (event) => {
+    const routeId = routeIdFromMapEvent(event);
+    if (!routeId) return;
+    focusRouteIdFromMap(routeId, event);
+  });
+  els.map.addEventListener("click", (event) => {
+    if (state.map.dragging) return;
+    if (event.target.closest(".map-controls, .map-layer-controls, .map-legend, .map-hint, .campsite-popup, .campsite-marker")) return;
+    const routeId = routeIdFromMapEvent(event);
+    if (!routeId) return;
+    focusRouteIdFromMap(routeId, event);
   });
   els.map.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return;
@@ -700,18 +712,26 @@ function renderReadinessDashboard() {
   const routes = filteredRoutes();
   const summary = filteredReadinessSummary(routes);
   const blockers = summary.topBlockerCategories || [];
-  const snapshotLabel = planningContextActive()
-    ? dateContextActive() ? "date-filtered" : "filtered"
-    : "library";
-  const topBlocker = blockers[0]
-    ? `${blockers[0].category}: ${blockers[0].count}`
-    : "no blocker data";
+  const windowLabel = dateContextActive() ? formatDateRange() : "No exact dates selected";
+  const commonBlockers = blockers.length
+    ? blockers.slice(0, 4).map((item) => `<li>${escapeHtml(item.category)} <strong>${item.count}</strong></li>`).join("")
+    : "<li>No blocker data for the current view</li>";
   els.readinessDashboard.innerHTML = `
-    <span><strong>${summary.routeCount || 0}</strong> ${snapshotLabel} matches</span>
-    <span><strong>${summary.planReadyCount || 0}</strong> plan ready</span>
-    <span><strong>${summary.gateConfirmedCount || 0}</strong> ride-ready</span>
-    <span><strong>${summary.gateBlockedCount || 0}</strong> need work</span>
-    <span>top work: <strong>${escapeHtml(topBlocker)}</strong></span>`;
+    <div class="decision-head">
+      <strong>Decision Snapshot</strong>
+      <span>${escapeHtml(windowLabel)}</span>
+    </div>
+    <div class="decision-metrics">
+      <span><strong>${summary.gateConfirmedCount || 0}</strong> ride-ready</span>
+      <span><strong>${summary.needsRefreshCount || 0}</strong> close / needs refresh</span>
+      <span><strong>${summary.planReadyCount || 0}</strong> planning-grade</span>
+      <span><strong>${summary.blockedRouteCount || summary.gateBlockedCount || 0}</strong> blocked / rework</span>
+      <span><strong>${summary.routeCount || 0}</strong> matching routes</span>
+    </div>
+    <div class="decision-blockers">
+      <span>Most common remaining work</span>
+      <ul>${commonBlockers}</ul>
+    </div>`;
 }
 
 function filteredReadinessSummary(routes) {
@@ -1111,12 +1131,11 @@ function renderRouteList() {
     row.innerHTML = `
       <span class="route-swatch" style="background:${route.color || "#2f7b58"}"></span>
       <span>
-        <span class="route-name">${escapeHtml(route.name)}</span>
+        <span class="route-title-line"><span class="status-chip ${rideReadyStatusClass(route)}">${rideReadyStatusLabel(route)}</span><span class="route-name">${escapeHtml(route.name)}</span></span>
         <span class="route-meta">${escapeHtml(route.region || labelGroup(route.group))} &middot; ${route.distanceMi || 0} mi &middot; ${(route.gainFt || 0).toLocaleString()} ft &middot; ${route.days.length} days &middot; ${escapeHtml(route.shape || "route")}</span>
         <span class="pill-row primary-pills">
           <span class="pill ${routeMaturityClass(route)}">${routeMaturityLabel(route)}</span>
-          <span class="pill ${rideReadyStatusClass(route)}">${rideReadyStatusLabel(route)}</span>
-          <span class="pill ${gateChipClass(topGate(route))}">Work required: ${escapeHtml(topGateLabel(route))}</span>
+          <span class="pill ${gateChipClass(topGate(route))}">Remaining work: ${escapeHtml(topGateLabel(route))}</span>
           ${routeDifficultyChip(route)}
         </span>
         <span class="pill-row secondary-pills">
@@ -1175,21 +1194,52 @@ async function focusRouteFromMap(route, event = null) {
   event?.stopPropagation();
   stopPanInertia();
   commitMapPreview();
-  state.selectedRouteId = route.id;
-  state.selectedCatalogueId = null;
-  state.highlightedRouteId = null;
-  state.activeVariants.clear();
-  fitToRoutes([route]);
-  drawAll();
-  try {
-    await hydrateRoute(route);
-    if (state.selectedRouteId === route.id) {
-      fitToRoutes([route]);
-      drawAll();
+  await selectRoute(route);
+}
+
+function focusRouteIdFromMap(routeId, event = null) {
+  const route = (state.trip?.routes || []).find((item) => item.id === routeId);
+  if (!route) return;
+  focusRouteFromMap(route, event);
+}
+
+function routeIdFromMapEvent(event) {
+  return event.target.closest?.(".route-line")?.dataset?.route
+    || state.highlightedRouteId
+    || nearestRouteIdAtClientPoint(event.clientX, event.clientY);
+}
+
+function nearestRouteIdAtClientPoint(clientX, clientY) {
+  const rect = els.map.getBoundingClientRect();
+  if (!rect.width || !rect.height) return "";
+  const projection = projectionContext(rect);
+  const target = [clientX - rect.left, clientY - rect.top];
+  const route = selectedRoute();
+  const routes = route ? [route] : filteredRoutes();
+  let best = { routeId: "", distanceSq: Infinity };
+  for (const item of routes) {
+    const maxPoints = route ? DETAIL_ROUTE_POINTS : (state.highlightedRouteId === item.id ? OVERVIEW_HIGHLIGHT_POINTS : OVERVIEW_ROUTE_POINTS);
+    for (const day of item.days || []) {
+      const coords = displayCoords(day.coords || [], maxPoints);
+      for (let index = 1; index < coords.length; index += 1) {
+        const a = project(coords[index - 1], projection);
+        const b = project(coords[index], projection);
+        const distanceSq = pointToSegmentDistanceSq(target, a, b);
+        if (distanceSq < best.distanceSq) best = { routeId: item.id, distanceSq };
+      }
     }
-  } catch (error) {
-    showLoadError(error);
   }
+  return best.distanceSq <= 24 ** 2 ? best.routeId : "";
+}
+
+function pointToSegmentDistanceSq(point, a, b) {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  if (!dx && !dy) return (point[0] - a[0]) ** 2 + (point[1] - a[1]) ** 2;
+  const t = clamp(((point[0] - a[0]) * dx + (point[1] - a[1]) * dy) / (dx * dx + dy * dy), 0, 1);
+  const x = a[0] + t * dx;
+  const y = a[1] + t * dy;
+  return (point[0] - x) ** 2 + (point[1] - y) ** 2;
 }
 
 function drawAll() {
@@ -1255,6 +1305,21 @@ function drawMap() {
         day: day.day,
         maxPoints,
         className: `route-line shadow ${overview ? "overview" : ""} ${dim ? "dim" : ""}`,
+        title: item.name,
+        onClick: (event) => focusRouteFromMap(item, event),
+        onEnter: () => {
+          if (state.map.dragging) return;
+          if (state.selectedRouteId === "__all") {
+            state.highlightedRouteId = item.id;
+            drawMap();
+          }
+        },
+        onLeave: () => {
+          if (state.selectedRouteId === "__all" && state.highlightedRouteId === item.id) {
+            state.highlightedRouteId = null;
+            drawMap();
+          }
+        },
       }, routeFragment, projection);
       appendPath(day.coords, item.color, {
         routeId: item.id,
@@ -1697,7 +1762,7 @@ function renderDetails() {
     }
     const intro = document.createElement("div");
     intro.className = "overview-card browse-intro";
-    intro.innerHTML = `<strong>Select a route to inspect days, camps, resources, variants, and vetting evidence.</strong><p class="route-note">The library starts date- and region-agnostic. Add dates, region, length, or style filters when you want to check which options are plausible for a specific trip.</p>`;
+    intro.innerHTML = `<strong>Select a route to inspect days, camps, resources, variants, and evidence.</strong><p class="route-note">The library starts date- and region-agnostic. Add dates, region, length, or style filters when you want to check which options are plausible for a specific trip.</p>`;
     const cards = filteredRoutes().slice(0, 18).map((item) => {
       const card = document.createElement("div");
       card.className = "overview-card";
@@ -1707,7 +1772,7 @@ function renderDetails() {
         <span class="pill-row">
           <span class="pill ${routeMaturityClass(item)}">${routeMaturityLabel(item)}</span>
           <span class="pill ${rideReadyStatusClass(item)}">${rideReadyStatusLabel(item)}</span>
-          <span class="pill ${gateChipClass(topGate(item))}">Work required: ${escapeHtml(topGateLabel(item))}</span>
+          <span class="pill ${gateChipClass(topGate(item))}">Remaining work: ${escapeHtml(topGateLabel(item))}</span>
           ${routeDifficultyChip(item)}
           <span class="pill ${gateCountClass(item)}">${gateSummaryLabel(item)}</span>
         </span>
@@ -1719,7 +1784,7 @@ function renderDetails() {
     return;
   }
   els.detailTitle.textContent = route.name;
-  els.detailMeta.textContent = `route overview | ${route.days.length} days | ${labelMaturity(routeMaturity(route))} | ${labelGateStatus(routeGateStatus(route))}`;
+  els.detailMeta.textContent = `route overview | ${route.days.length} days | ${routeMaturityLabel(route)} | ${labelGateStatus(routeGateStatus(route))}`;
   const overview = document.createElement("div");
   const gateStatus = routeGateStatus(route);
   const maturity = routeMaturity(route);
@@ -2442,7 +2507,7 @@ function rideReadyStatusLabel(route) {
   if (routeGateStatus(route) === "confirmed") return "Ride-ready";
   const gates = biggestGates(route, 20).length;
   if (gates) return "Not ride-ready";
-  return "Needs final check";
+  return "Needs current-condition refresh";
 }
 
 function rideReadyStatusClass(route) {
@@ -2453,12 +2518,12 @@ function rideReadyStatusClass(route) {
 
 function labelDecision(value) {
   return {
-    candidate: "candidate",
+    candidate: "new candidate",
     top_candidate: "strong candidate",
     close_candidate: "close candidate",
     near_ride_ready: "close to ride-ready",
     ride_ready_with_final_refresh: "ride-ready with final refresh",
-    reject_rework: "blocked / rework",
+    reject_rework: "blocked - do not use yet",
     segment_only: "segment only",
     rework: "rework",
   }[value] || String(value || "candidate").replace(/_/g, " ");
@@ -2577,8 +2642,8 @@ function visibleGateCountLabel(route, limit = 5) {
 
 function gateSummaryLabel(route) {
   const total = biggestGates(route, 20).length;
-  if (routeGateStatus(route) === "confirmed" && !total) return "No ride-ready work";
-  return `${total} ride-ready work ${total === 1 ? "item" : "items"}`;
+  if (routeGateStatus(route) === "confirmed" && !total) return "No remaining work";
+  return `${total} remaining work ${total === 1 ? "item" : "items"}`;
 }
 
 function gateCountClass(route) {
@@ -2732,27 +2797,35 @@ function sourceLinkHtml(route, options = {}) {
   if (!source) return "";
   const className = options.compact ? "source-link compact" : "source-link";
   const prefix = source.kind === "audit" ? "Audit:" : "Source:";
+  if (source.kind === "local") {
+    return `<span class="${className} local-source"><span>${prefix}</span> ${escapeHtml(source.label)} <em>local</em></span>`;
+  }
   return `<a class="${className}" href="${escapeHtml(source.url)}" target="_blank" rel="noopener noreferrer"><span>${prefix}</span> ${escapeHtml(source.label)} <em>↗</em></a>`;
 }
 
 function sourceListHtml(route) {
   const sources = routeSources(route).slice(0, 6);
   if (!sources.length) {
-    return `<div class="source-list"><strong>Stored web sources</strong><p class="route-note">No human or website source URL is stored for this route yet.</p></div>`;
+    return `<div class="source-list"><strong>Stored sources</strong><p class="route-note">No route source URL or local source file is stored for this route yet.</p></div>`;
   }
-  return `<div class="source-list"><strong>Stored web sources</strong>${sources.map((source) => `
-    <a href="${escapeHtml(source.url)}" target="_blank" rel="noopener noreferrer">
-      <span>${escapeHtml(source.title || source.label || sourceLabelForUrl(source.url))}</span>
-      ${source.accessed ? `<em>${escapeHtml(source.accessed)}</em>` : ""}
-    </a>`).join("")}</div>`;
+  return `<div class="source-list"><strong>Stored sources</strong>${sources.map((source) => {
+    const label = escapeHtml(source.title || source.label || sourceLabelForUrl(source.url));
+    const meta = source.accessed ? `<em>${escapeHtml(source.accessed)}</em>` : source.kind === "local" ? "<em>local</em>" : "";
+    if (source.kind === "local") {
+      return `<span class="source-list-local"><span>${label}</span>${meta}</span>`;
+    }
+    return `<a href="${escapeHtml(source.url)}" target="_blank" rel="noopener noreferrer"><span>${label}</span>${meta}</a>`;
+  }).join("")}</div>`;
 }
 
 function primarySource(route = {}) {
   const candidates = routeSources(route);
   const routePage = candidates.find((item) => isRouteSourceUrl(item.url));
   if (routePage) return { ...routePage, label: sourceLabelForUrl(routePage.url) };
-  const webSource = candidates.find((item) => !isDirectFileUrl(item.url));
-  return webSource || candidates[0] || null;
+  const geometrySource = candidates.find((item) => item.kind === "local" || isGeometrySource(item));
+  if (geometrySource) return geometrySource;
+  const webSource = candidates.find((item) => item.kind !== "audit" && !isOperationalGateSource(item));
+  return webSource || candidates.find((item) => item.kind === "audit") || candidates[0] || null;
 }
 
 function routeSources(route = {}) {
@@ -2768,7 +2841,7 @@ function routeSources(route = {}) {
 }
 
 function sourceCandidate(url, label = "Original source", options = {}) {
-  const cleanUrl = normalizeHttpUrl(url);
+  const cleanUrl = normalizeSourceUrl(url);
   if (!cleanUrl) return null;
   const kind = options.kind || sourceKindForUrl(cleanUrl);
   const displayLabel = kind === "audit" && ["Original source", "Original route source"].includes(label)
@@ -2798,8 +2871,10 @@ function sourceLabelForUrl(url) {
   try {
     const parsed = new URL(url);
     if (isRouteSourceUrl(url)) return "BIKEPACKING.com route source";
+    if (isDirectFileUrl(url)) return "Route geometry file";
     return "Original route source";
   } catch {
+    if (isDirectFileUrl(url)) return "Route geometry file";
     return "Original route source";
   }
 }
@@ -2808,10 +2883,15 @@ function extractHttpUrls(value = "") {
   return String(value || "").match(/https?:\/\/[^\s<>)"']+/g) || [];
 }
 
-function normalizeHttpUrl(value) {
+function normalizeSourceUrl(value) {
   const url = String(value || "").trim().replace(/[.,;:]+$/, "");
+  if (isLocalSourcePath(url)) return url;
   if (!/^https?:\/\//i.test(url)) return "";
   return url;
+}
+
+function isLocalSourcePath(url = "") {
+  return /^(routes|research|bikepacking_planner|docs)\//.test(String(url || ""));
 }
 
 function isDirectFileUrl(url = "") {
@@ -2840,6 +2920,7 @@ function isRouteSourceUrl(url = "") {
 }
 
 function sourceKindForUrl(url = "") {
+  if (isLocalSourcePath(url)) return "local";
   try {
     const parsed = new URL(url);
     if (parsed.hostname.includes("github.com") && parsed.pathname.includes("/issues/")) return "audit";
@@ -2847,6 +2928,27 @@ function sourceKindForUrl(url = "") {
     return "source";
   }
   return "source";
+}
+
+function isGeometrySource(source = {}) {
+  return isDirectFileUrl(source.url) || /gpx|geojson|route geometry|route file/i.test(`${source.label || ""} ${source.title || ""}`);
+}
+
+function isOperationalGateSource(source = {}) {
+  const haystack = `${source.url || ""} ${source.label || ""} ${source.title || ""}`.toLowerCase();
+  return [
+    "quickmap.dot.ca.gov",
+    "weather.gov",
+    "airnow.gov",
+    "fire.ca.gov",
+    "conditions",
+    "closure",
+    "transit",
+    "parking",
+    "camping",
+    "reservation",
+    "state parks",
+  ].some((needle) => haystack.includes(needle));
 }
 
 function monthToSeason(month) {
